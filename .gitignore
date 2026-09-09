@@ -33,6 +33,9 @@ htmlcov/
 eval_report.md
 eval_report.json
 
+# Spend ledger written by spine.router
+.spend/
+
 # Local databases
 *.db
 *.sqlite

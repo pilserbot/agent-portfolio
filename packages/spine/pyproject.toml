@@ -5,6 +5,8 @@ description = "Shared evaluation, model routing and KPI library for the agent po
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "instructor>=1.7",
+    "litellm>=1.60",
     "pydantic>=2.9",
 ]
 
