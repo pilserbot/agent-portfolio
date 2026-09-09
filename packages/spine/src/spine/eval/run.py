@@ -1,9 +1,10 @@
 """Evaluation entry point: run a gold set and write a KPI report.
 
-Invoked as `python -m spine.eval.run --sample 20 --out eval_report.md`. Omitting
-`--sample` evaluates the full gold set. Two files are written: the markdown report at
-`--out`, and a machine-readable sidecar with the same stem and a `.json` suffix that
-`spine.eval.gate` compares against `evals/baseline.json`.
+Invoked as `python -m spine.eval.run --sample 20 --out eval_report.md --json-out
+eval_report.json --project ri05`. Omitting `--sample` evaluates the full gold set. Two
+files are written: the human report at `--out`, and the machine-readable one at
+`--json-out`, which `spine.eval.gate` compares against `evals/baseline.json`. When
+`--json-out` is omitted the JSON goes beside `--out` under the same stem.
 
 Deliberately does not: call a model, read a gold set, or compute a real KPI. This is a
 stub that fixes the CLI contract and the report shape so the CI plumbing can be built and
@@ -31,12 +32,18 @@ class EvalRequest(BaseModel):
     """What to evaluate, and where the result goes."""
 
     out: Path
+    json_out: Path | None = Field(
+        default=None,
+        description="Where the machine-readable report goes. None puts it beside `out`.",
+    )
+    project: str = Field(default="unknown", description='Which project is evaluated, e.g. "ri05".')
     sample: int | None = Field(default=None, description="None evaluates the full gold set.")
 
 
 class EvalReport(BaseModel):
     """The outcome of one evaluation run."""
 
+    project: str
     scope: Literal["sample", "full"]
     sample_size: int | None
     rows: list[KpiRow]
@@ -59,6 +66,7 @@ def build_report(request: EvalRequest) -> EvalReport:
         KpiRow(metric="cost_per_item_usd", value=0.0, unit="usd"),
     ]
     return EvalReport(
+        project=request.project,
         scope="full" if request.sample is None else "sample",
         sample_size=request.sample,
         rows=rows,
@@ -68,9 +76,10 @@ def build_report(request: EvalRequest) -> EvalReport:
 def write_report(request: EvalRequest, report: EvalReport) -> WrittenReport:
     """Write the markdown report and its machine-readable sidecar."""
     markdown_path = request.out
-    metrics_path = markdown_path.with_suffix(".json")
-    if markdown_path.parent != Path(""):
-        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path = request.json_out or markdown_path.with_suffix(".json")
+    for path in (markdown_path, metrics_path):
+        if path.parent != Path(""):
+            path.parent.mkdir(parents=True, exist_ok=True)
     markdown_path.write_text(_render_markdown(report), encoding="utf-8")
     metrics_path.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return WrittenReport(markdown_path=markdown_path, metrics_path=metrics_path)
@@ -82,6 +91,7 @@ def _render_markdown(report: EvalReport) -> str:
     lines = [
         "## Evaluation report",
         "",
+        f"Project: **{report.project}**",
         f"Scope: **{scope}**",
         "",
         "| Metric | Value | Unit |",
@@ -114,9 +124,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="Path of the markdown report to write.",
     )
+    parser.add_argument(
+        "--json-out",
+        type=Path,
+        default=None,
+        help="Path of the machine-readable report. Defaults to --out with a .json suffix.",
+    )
+    parser.add_argument(
+        "--project",
+        default="unknown",
+        help='Which project is being evaluated, e.g. "ri05".',
+    )
     args = parser.parse_args(argv)
 
-    request = EvalRequest(out=args.out, sample=args.sample)
+    request = EvalRequest(
+        out=args.out,
+        json_out=args.json_out,
+        project=args.project,
+        sample=args.sample,
+    )
     written = write_report(request, build_report(request))
     print(f"Wrote {written.markdown_path} and {written.metrics_path}")
     return 0

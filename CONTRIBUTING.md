@@ -4,7 +4,7 @@
 
 `.github/workflows/ci.yml` deliberately splits into two jobs rather than one.
 
-**`test`** runs on every push and every pull request. It lints, format-checks, and runs
+**`test`** runs on every pull request and on pushes to `main`. It lints, format-checks, and runs
 `pytest -m "not integration" --cov`. It uses no secrets and needs no network beyond
 installing packages. It is the job that must be green for a change to be reviewable.
 
@@ -12,6 +12,9 @@ installing packages. It is the job that must be green for a change to be reviewa
 `DATABASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_HOST` from
 repository secrets, runs `pytest -m integration`, then runs the evaluation and gates the
 result against `evals/baseline.json`.
+
+Both triggers are narrow on purpose: `push` is limited to `main` so that pushing to a
+branch with an open pull request fires one workflow run rather than two.
 
 The reason for the split is the development sandbox: **it has no network access and no
 environment variables.** Anything that needs an API key or a database therefore cannot run
@@ -49,9 +52,11 @@ Add the label and re-run the job when a change is likely to move the metrics.
 
 ## The evaluation report
 
-`python -m spine.eval.run --sample 20 --out eval_report.md` writes two files: the markdown
-report at `--out`, and a machine-readable sidecar with the same stem and a `.json` suffix.
-Omit `--sample` to evaluate the full gold set.
+`python -m spine.eval.run --sample 20 --out eval_report.md --json-out eval_report.json
+--project ri05` writes two files: the markdown report at `--out`, and the
+machine-readable one at `--json-out`. If `--json-out` is omitted the JSON goes beside
+`--out` under the same stem, but CI names both paths explicitly. Omit `--sample` to
+evaluate the full gold set.
 
 The markdown is posted to the pull request as a **sticky** comment (via
 `marocchino/sticky-pull-request-comment`, keyed on the header `eval-report`), so re-runs

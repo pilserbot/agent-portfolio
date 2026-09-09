@@ -18,7 +18,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 # Money is carried as Decimal so that summing costs does not accumulate binary-float error.
 # It is never formatted here: presentation belongs to the caller.
@@ -27,7 +27,11 @@ UsdAmount = Annotated[
     Field(ge=0, description="Amount in usd. Unformatted; the caller decides presentation."),
 ]
 
-Status = Literal["ok", "failed", "skipped"]
+StepStatus = Literal["ok", "failed", "skipped"]
+
+# A run is long-lived: it can pause at a human review interrupt for days and resume, so
+# it needs mid-flight states. "skipped" is meaningless for a run and is absent here.
+RunStatus = Literal["running", "awaiting_review", "completed", "failed", "cancelled"]
 Direction = Literal["higher_is_better", "lower_is_better"]
 Method = Literal["test", "analysis", "inspection", "demonstration"]
 
@@ -56,12 +60,12 @@ class StepTrace(BaseModel):
     step_name: str
     started_at: datetime
     finished_at: datetime
-    status: Status
+    status: StepStatus
     model_calls: list[ModelCall] = Field(default_factory=list)
     error: str | None = None
-    metadata: dict[str, str] = Field(
+    metadata: dict[str, str | int | float | bool] = Field(
         default_factory=dict,
-        description="Free-form annotations. Values are strings so the record stays portable.",
+        description="Free-form annotations. Scalar values only, so the record stays portable.",
     )
 
 
@@ -75,7 +79,7 @@ class AgentRun(BaseModel):
     started_at: datetime
     finished_at: datetime
     steps: list[StepTrace] = Field(default_factory=list)
-    status: Status
+    status: RunStatus
 
     @computed_field(description="Sum of every model call's cost_usd across every step, in usd.")
     @property
@@ -112,7 +116,19 @@ class AgentRun(BaseModel):
 
 
 class BoundingBox(BaseModel):
-    """A rectangle on a page, in the coordinate space of the source document."""
+    """A rectangle on a page of the source document.
+
+    Coordinates follow the extraction convention rather than the PDF drawing convention:
+    the origin is the **top-left** corner of the page, x increases rightward and y
+    increases **downward**. Units are PDF points (1/72 inch). `(x0, y0)` is the top-left
+    corner of the rectangle and `(x1, y1)` the bottom-right, so `x1 >= x0` and
+    `y1 >= y0`; that ordering is a convention here, not an enforced constraint. The page
+    is the one named by the `EvidenceRef` carrying this box.
+
+    Beware when reading boxes straight from a PDF library: PDF user space puts the origin
+    at the bottom-left with y increasing upward, so those coordinates must be flipped
+    before they are stored here.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -126,17 +142,34 @@ class EvidenceRef(BaseModel):
     """A pointer back to where something came from.
 
     Everything this project asserts carries one of these, so any figure or verdict can be
-    traced to the passage it rests on.
+    traced to the passage it rests on. Sources vary in what they can be addressed by — a
+    tender has clauses, a drawing has none — so every locating field is optional, but at
+    least one must be present: a reference that points nowhere is not evidence.
     """
 
     model_config = ConfigDict(frozen=True)
 
     source_id: str
     document: str
-    page: int = Field(ge=0)
-    clause: str
+    page: int | None = Field(default=None, ge=0)
+    clause: str | None = None
     bbox: BoundingBox | None = None
+    locator: str | None = Field(
+        default=None,
+        description="Free-form address for sources with no page or clause, "
+        'e.g. "BOQ row 214" or "Drawing SEC-004 detail B".',
+    )
     quote: str
+
+    @model_validator(mode="after")
+    def _require_a_locator(self) -> "EvidenceRef":
+        """Reject a reference that carries no way to find the passage again."""
+        if self.page is None and self.clause is None and self.bbox is None and self.locator is None:
+            raise ValueError(
+                "EvidenceRef needs at least one of page, clause, bbox or locator; "
+                "otherwise it does not point anywhere."
+            )
+        return self
 
 
 class Verdict(BaseModel):

@@ -43,7 +43,7 @@ def a_step(name: str, calls: list[ModelCall]) -> StepTrace:
         finished_at=AT,
         status="ok",
         model_calls=calls,
-        metadata={"gold_set": "v1"},
+        metadata={"gold_set": "v1", "retries": 2, "ratio": 0.5, "cached": True},
     )
 
 
@@ -54,7 +54,18 @@ def a_run(steps: list[StepTrace]) -> AgentRun:
         started_at=AT,
         finished_at=AT,
         steps=steps,
-        status="ok",
+        status="completed",
+    )
+
+
+def a_run_with_status(status: str) -> AgentRun:
+    return AgentRun(
+        run_id="run-1",
+        project="ri05",
+        started_at=AT,
+        finished_at=AT,
+        steps=[],
+        status=status,
     )
 
 
@@ -223,3 +234,160 @@ def test_to_row_is_flat_and_unformatted() -> None:
     }
     assert not any(isinstance(v, str) and v.startswith("$") for v in row.values())
     assert all(not isinstance(v, dict | list) for v in row.values())
+
+
+# --- EvidenceRef locating fields ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "locating",
+    [
+        {"page": 4},
+        {"clause": "3.2.1"},
+        {"bbox": BoundingBox(x0=1.0, y0=2.0, x1=3.0, y1=4.0)},
+        {"locator": "BOQ row 214"},
+        {"locator": "Drawing SEC-004 detail B"},
+        {"page": 4, "clause": "3.2.1"},
+    ],
+    ids=["page", "clause", "bbox", "locator-boq", "locator-drawing", "page-and-clause"],
+)
+def test_any_single_locating_field_is_enough(locating: dict[str, object]) -> None:
+    ref = EvidenceRef(source_id="s", document="d.pdf", quote="q", **locating)
+
+    for name, value in locating.items():
+        assert getattr(ref, name) == value
+
+
+def test_page_and_clause_are_optional() -> None:
+    ref = EvidenceRef(source_id="s", document="d.pdf", quote="q", locator="BOQ row 214")
+
+    assert ref.page is None
+    assert ref.clause is None
+
+
+def test_an_evidence_ref_that_points_nowhere_is_rejected() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        EvidenceRef(source_id="s", document="d.pdf", quote="q")
+
+    assert "at least one of page, clause, bbox or locator" in str(excinfo.value)
+
+
+def test_an_evidence_ref_with_every_field_none_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        EvidenceRef(
+            source_id="s",
+            document="d.pdf",
+            quote="q",
+            page=None,
+            clause=None,
+            bbox=None,
+            locator=None,
+        )
+
+
+def test_page_zero_counts_as_a_locator() -> None:
+    # Page 0 is falsy but present; the validator must test for None, not truthiness.
+    ref = EvidenceRef(source_id="s", document="d.pdf", quote="q", page=0)
+
+    assert ref.page == 0
+
+
+def test_a_locator_only_ref_round_trips() -> None:
+    ref = EvidenceRef(source_id="s", document="d.pdf", quote="q", locator="BOQ row 214")
+
+    assert EvidenceRef.model_validate_json(ref.model_dump_json()) == ref
+
+
+# --- split status enums -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["running", "awaiting_review", "completed", "failed", "cancelled"],
+)
+def test_a_run_accepts_every_run_status(status: str) -> None:
+    assert a_run_with_status(status).status == status
+
+
+def test_a_run_pausing_at_a_review_interrupt_is_representable() -> None:
+    run = a_run_with_status("awaiting_review")
+
+    assert run.status == "awaiting_review"
+
+
+def test_a_run_rejects_a_step_status() -> None:
+    # "skipped" and "ok" are meaningless for a run.
+    for status in ("skipped", "ok"):
+        with pytest.raises(ValidationError):
+            a_run_with_status(status)
+
+
+@pytest.mark.parametrize("status", ["ok", "failed", "skipped"])
+def test_a_step_accepts_every_step_status(status: str) -> None:
+    step = StepTrace(step_name="s", started_at=AT, finished_at=AT, status=status)
+
+    assert step.status == status
+
+
+def test_a_step_rejects_a_run_status() -> None:
+    with pytest.raises(ValidationError):
+        StepTrace(step_name="s", started_at=AT, finished_at=AT, status="awaiting_review")
+
+
+# --- widened step metadata ----------------------------------------------------------
+
+
+def test_metadata_carries_mixed_scalars_without_coercing_them() -> None:
+    step = StepTrace(
+        step_name="s",
+        started_at=AT,
+        finished_at=AT,
+        status="ok",
+        metadata={"name": "v1", "retries": 2, "ratio": 0.5, "cached": True},
+    )
+
+    assert step.metadata["name"] == "v1"
+    assert step.metadata["retries"] == 2
+    assert isinstance(step.metadata["retries"], int)
+    assert step.metadata["ratio"] == 0.5
+    assert step.metadata["cached"] is True
+    # bool is a subclass of int, so assert the union did not widen True into 1.
+    assert isinstance(step.metadata["cached"], bool)
+
+
+def test_metadata_types_survive_the_json_round_trip() -> None:
+    step = StepTrace(
+        step_name="s",
+        started_at=AT,
+        finished_at=AT,
+        status="ok",
+        metadata={"name": "v1", "retries": 2, "ratio": 0.5, "cached": True},
+    )
+
+    restored = StepTrace.model_validate_json(step.model_dump_json())
+
+    assert restored == step
+    assert isinstance(restored.metadata["cached"], bool)
+    assert isinstance(restored.metadata["retries"], int)
+
+
+def test_metadata_rejects_a_nested_structure() -> None:
+    with pytest.raises(ValidationError):
+        StepTrace(
+            step_name="s",
+            started_at=AT,
+            finished_at=AT,
+            status="ok",
+            metadata={"nested": {"not": "scalar"}},
+        )
+
+
+# --- BoundingBox convention ----------------------------------------------------------
+
+
+def test_bounding_box_docstring_states_the_origin_and_axes() -> None:
+    doc = BoundingBox.__doc__ or ""
+
+    assert "top-left" in doc
+    assert "downward" in doc
+    assert "points" in doc

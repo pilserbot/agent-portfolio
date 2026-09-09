@@ -71,3 +71,55 @@ def test_a_baseline_metric_absent_from_the_report_is_reported_not_failed() -> No
 
     assert verdict.passed
     assert verdict.missing == ["nonexistent"]
+
+
+def test_json_out_overrides_the_default_sidecar_path(tmp_path: Path) -> None:
+    request = EvalRequest(
+        out=tmp_path / "eval_report.md",
+        json_out=tmp_path / "elsewhere" / "metrics.json",
+        sample=20,
+    )
+
+    written = write_report(request, build_report(request))
+
+    assert written.metrics_path == tmp_path / "elsewhere" / "metrics.json"
+    assert written.metrics_path.exists()
+    assert not (tmp_path / "eval_report.json").exists()
+
+
+def test_json_out_defaults_to_the_markdown_stem(tmp_path: Path) -> None:
+    request = EvalRequest(out=tmp_path / "eval_report.md", sample=20)
+
+    written = write_report(request, build_report(request))
+
+    assert written.metrics_path == tmp_path / "eval_report.json"
+
+
+def test_project_reaches_the_report_and_the_markdown(tmp_path: Path) -> None:
+    out = tmp_path / "eval_report.md"
+
+    assert main(["--sample", "20", "--out", str(out), "--project", "example"]) == 0
+
+    assert "Project: **example**" in out.read_text(encoding="utf-8")
+    assert json.loads((tmp_path / "eval_report.json").read_text(encoding="utf-8"))["project"] == (
+        "example"
+    )
+
+
+def test_the_cli_accepts_exactly_the_flags_the_workflow_passes(tmp_path: Path) -> None:
+    # Guards .github/workflows/ci.yml: a flag removed here turns the eval job red.
+    exit_code = main(
+        [
+            "--sample",
+            "20",
+            "--out",
+            str(tmp_path / "eval_report.md"),
+            "--json-out",
+            str(tmp_path / "eval_report.json"),
+            "--project",
+            "example",
+        ]
+    )
+
+    assert exit_code == 0
+    assert (tmp_path / "eval_report.json").exists()

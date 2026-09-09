@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -18,6 +19,7 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +51,7 @@ jobs:
   eval:
     name: eval
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: >-
       github.event_name == 'pull_request'
       || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -130,7 +133,14 @@ jobs:
         env:
           EVAL_ARGS: ${{ steps.scope.outputs.args }}
         # EVAL_ARGS is deliberately unquoted: it is either empty or two separate arguments.
-        run: uv run python -m spine.eval.run $EVAL_ARGS --out eval_report.md
+        # The real spine.eval.run must honour --json-out and --project when it is
+        # implemented: the gate below reads the path named by --json-out, and --project
+        # labels the report. Today's stub already accepts both.
+        run: |
+          uv run python -m spine.eval.run $EVAL_ARGS \
+            --out eval_report.md \
+            --json-out eval_report.json \
+            --project example
 
       # Posted before the gate runs, so a regression still leaves the report on the PR.
       - name: Post the report as a sticky pull-request comment
