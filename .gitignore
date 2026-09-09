@@ -29,6 +29,10 @@ coverage.xml
 htmlcov/
 .ipynb_checkpoints/
 
+# Evaluation reports, written into the working tree by `spine.eval.run`
+eval_report.md
+eval_report.json
+
 # Local databases
 *.db
 *.sqlite

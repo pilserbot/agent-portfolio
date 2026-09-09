@@ -19,7 +19,9 @@ apps/dashboards/         Streamlit dashboards                              (scaf
 data/                    seed data and gold sets, committed to the repo
 evals/                   evaluation baselines and reports
 tests/                   pytest suites; tests/integration/ needs keys or a database
+.github/workflows/ci.yml two jobs: `test` (no secrets) and `eval` (secrets, gold set)
 CLAUDE.md                the conventions every change follows
+CONTRIBUTING.md          why CI is split in two, and how the evaluation job behaves
 .env.example             every configuration variable, with placeholder values
 ```
 
@@ -45,7 +47,8 @@ make test-fast   # unit tests: no network, no environment variables
 
 ## Conventions
 
-See [CLAUDE.md](CLAUDE.md). The short version: Pydantic v2 models across every module
+See [CLAUDE.md](CLAUDE.md), and [CONTRIBUTING.md](CONTRIBUTING.md) for how that shapes
+CI. The short version: Pydantic v2 models across every module
 boundary, models only for text-to-structure, deterministic Python for every number,
 module docstrings that say what the module does *and* does not do, full type hints, and
 a clean `ruff`.

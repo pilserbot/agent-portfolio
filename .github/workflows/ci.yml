@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# TODO: pin every third-party action below to a commit SHA. Tag refs are used for now
+# because writing an unverified digest would be a guess.
+jobs:
+  # Lint and unit tests. No secrets, no network beyond installing packages.
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-packages --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Unit tests
+        run: uv run pytest -m "not integration" --cov
+
+  # Integration tests and the evaluation run. Needs secrets, so it is skipped (not failed)
+  # whenever they are absent — pull requests from forks, and forks' own pipelines.
+  eval:
+    name: eval
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'pull_request'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+    steps:
+      # The `secrets` context is not available in an `if:` expression, so the guard has to
+      # be a step that reads the secret and publishes a plain output.
+      - name: Check whether secrets are available
+        id: guard
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY is empty; skipping the evaluation job."
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.guard.outputs.available == 'true'
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        if: steps.guard.outputs.available == 'true'
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Python 3.12
+        if: steps.guard.outputs.available == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.guard.outputs.available == 'true'
+        run: uv sync --all-packages --locked
+
+      - name: Integration tests
+        if: steps.guard.outputs.available == 'true'
+        run: |
+          set +e
+          uv run pytest -m integration
+          status=$?
+          set -e
+          # pytest exits 5 when nothing is collected. There are no integration tests yet;
+          # remove this tolerance once the first one lands.
+          if [ "$status" -eq 5 ]; then
+            echo "::notice::No integration tests are defined yet."
+            exit 0
+          fi
+          exit "$status"
+
+      # The full gold set runs on pushes to main and on pull requests labelled `full-eval`;
+      # every other pull request gets a 20-item sample.
+      - name: Determine evaluation scope
+        id: scope
+        if: steps.guard.outputs.available == 'true'
+        env:
+          FULL_EVAL: ${{ github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'full-eval') }}
+        run: |
+          if [ "$FULL_EVAL" = "true" ]; then
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "::notice::Running the full gold set."
+          else
+            echo "args=--sample 20" >> "$GITHUB_OUTPUT"
+            echo "::notice::Running a 20-item sample."
+          fi
+
+      - name: Run evaluation
+        if: steps.guard.outputs.available == 'true'
+        env:
+          EVAL_ARGS: ${{ steps.scope.outputs.args }}
+        # EVAL_ARGS is deliberately unquoted: it is either empty or two separate arguments.
+        run: uv run python -m spine.eval.run $EVAL_ARGS --out eval_report.md
+
+      # Posted before the gate runs, so a regression still leaves the report on the PR.
+      - name: Post the report as a sticky pull-request comment
+        if: steps.guard.outputs.available == 'true' && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: eval-report
+          path: eval_report.md
+
+      - name: Check for regressions against the baseline
+        if: steps.guard.outputs.available == 'true'
+        run: uv run python -m spine.eval.gate --report eval_report.json --baseline evals/baseline.json
+
+      - name: Upload the report
+        if: "!cancelled() && steps.guard.outputs.available == 'true'"
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: |
+            eval_report.md
+            eval_report.json
+          if-no-files-found: ignore
