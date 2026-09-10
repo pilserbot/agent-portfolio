@@ -99,18 +99,7 @@ jobs:
 
       - name: Integration tests
         if: steps.guard.outputs.available == 'true'
-        run: |
-          set +e
-          uv run pytest -m integration
-          status=$?
-          set -e
-          # pytest exits 5 when nothing is collected. There are no integration tests yet;
-          # remove this tolerance once the first one lands.
-          if [ "$status" -eq 5 ]; then
-            echo "::notice::No integration tests are defined yet."
-            exit 0
-          fi
-          exit "$status"
+        run: uv run pytest -m integration
 
       # The full gold set runs on pushes to main and on pull requests labelled `full-eval`;
       # every other pull request gets a 20-item sample.
