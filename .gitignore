@@ -36,6 +36,9 @@ eval_report.json
 # Spend ledger written by spine.router
 .spend/
 
+# LangGraph checkpoints written by the SQLite fallback
+.checkpoints/
+
 # Local databases
 *.db
 *.sqlite

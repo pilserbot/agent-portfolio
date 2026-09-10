@@ -31,7 +31,16 @@ StepStatus = Literal["ok", "failed", "skipped"]
 
 # A run is long-lived: it can pause at a human review interrupt for days and resume, so
 # it needs mid-flight states. "skipped" is meaningless for a run and is absent here.
-RunStatus = Literal["running", "awaiting_review", "completed", "failed", "cancelled"]
+# "completed_with_errors" exists so a run that finished while a step failed cannot be
+# reported as plain "completed" — see the validator on AgentRun.
+RunStatus = Literal[
+    "running",
+    "awaiting_review",
+    "completed",
+    "completed_with_errors",
+    "failed",
+    "cancelled",
+]
 Direction = Literal["higher_is_better", "lower_is_better"]
 Method = Literal["test", "analysis", "inspection", "demonstration"]
 
@@ -113,6 +122,32 @@ class AgentRun(BaseModel):
     def total_tokens(self) -> int:
         """Prompt plus completion tokens. Cached tokens are reported separately."""
         return self.total_prompt_tokens + self.total_completion_tokens
+
+    @computed_field(description="Whether any step in the run failed.")
+    @property
+    def has_failed_steps(self) -> bool:
+        """Whether any step failed."""
+        return any(step.status == "failed" for step in self.steps)
+
+    @property
+    def failed_steps(self) -> list[StepTrace]:
+        """The steps that failed, in the order they ran.
+
+        A plain property rather than a computed field: the traces are already serialised
+        once under `steps`, and repeating them would double the size of every record.
+        """
+        return [step for step in self.steps if step.status == "failed"]
+
+    @model_validator(mode="after")
+    def _failed_steps_forbid_a_clean_status(self) -> "AgentRun":
+        """Refuse to call a run "completed" when one of its steps failed."""
+        if self.status == "completed" and self.has_failed_steps:
+            names = ", ".join(step.step_name for step in self.failed_steps)
+            raise ValueError(
+                f"AgentRun {self.run_id!r} cannot be 'completed' with failed steps "
+                f"({names}); use 'completed_with_errors'."
+            )
+        return self
 
 
 class BoundingBox(BaseModel):
