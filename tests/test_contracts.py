@@ -303,7 +303,7 @@ def test_a_locator_only_ref_round_trips() -> None:
 
 @pytest.mark.parametrize(
     "status",
-    ["running", "awaiting_review", "completed", "failed", "cancelled"],
+    ["running", "awaiting_review", "completed", "completed_with_errors", "failed", "cancelled"],
 )
 def test_a_run_accepts_every_run_status(status: str) -> None:
     assert a_run_with_status(status).status == status
@@ -391,3 +391,68 @@ def test_bounding_box_docstring_states_the_origin_and_axes() -> None:
     assert "top-left" in doc
     assert "downward" in doc
     assert "points" in doc
+
+
+# --- a failed step cannot hide -------------------------------------------------------
+
+
+def a_failed_step(name: str = "price") -> StepTrace:
+    return StepTrace(
+        step_name=name, started_at=AT, finished_at=AT, status="failed", error="Boom: nope"
+    )
+
+
+def a_run_with(steps: list[StepTrace], status: str = "completed_with_errors") -> AgentRun:
+    return AgentRun(
+        run_id="run-1",
+        project="ri05",
+        started_at=AT,
+        finished_at=AT,
+        steps=steps,
+        status=status,
+    )
+
+
+def test_a_clean_run_reports_no_failed_steps() -> None:
+    run = a_run_with([a_step("extract", [])], status="completed")
+
+    assert run.has_failed_steps is False
+    assert run.failed_steps == []
+
+
+def test_failed_steps_are_reported_in_order() -> None:
+    steps = [a_step("extract", []), a_failed_step("price"), a_failed_step("draft")]
+
+    run = a_run_with(steps)
+
+    assert run.has_failed_steps is True
+    assert [step.step_name for step in run.failed_steps] == ["price", "draft"]
+
+
+def test_a_run_with_a_failed_step_cannot_be_completed() -> None:
+    with pytest.raises(ValidationError, match="completed_with_errors"):
+        a_run_with([a_step("extract", []), a_failed_step()], status="completed")
+
+
+def test_the_error_names_the_failed_step() -> None:
+    with pytest.raises(ValidationError, match="price"):
+        a_run_with([a_failed_step("price")], status="completed")
+
+
+def test_completed_with_errors_is_accepted_for_a_run_that_had_a_failure() -> None:
+    run = a_run_with([a_step("extract", []), a_failed_step()])
+
+    assert run.status == "completed_with_errors"
+
+
+def test_other_statuses_are_unaffected_by_a_failed_step() -> None:
+    for status in ("running", "awaiting_review", "failed", "cancelled"):
+        assert a_run_with([a_failed_step()], status=status).status == status
+
+
+def test_has_failed_steps_is_serialised_but_failed_steps_is_not() -> None:
+    dumped = a_run_with([a_failed_step()]).model_dump()
+
+    assert dumped["has_failed_steps"] is True
+    # The traces are already under "steps"; repeating them would double every record.
+    assert "failed_steps" not in dumped

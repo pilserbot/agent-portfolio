@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from spine.contracts import AgentRun
 from spine.graph import (
@@ -250,17 +250,19 @@ def test_a_resumed_run_records_as_completed(tmp_path: Path) -> None:
 # --- retries and failure ----------------------------------------------------------------
 
 
-class Boom(RuntimeError):
-    """A node failure used by the retry tests."""
+class SimulatedTimeout(TimeoutError):
+    """A transient node failure: the kind a second attempt could plausibly survive."""
 
 
-def flaky(fail_times: int, counter: dict[str, int]) -> NodeFn:
+def flaky(
+    fail_times: int, counter: dict[str, int], error: type[Exception] = SimulatedTimeout
+) -> NodeFn:
     """A node that fails a set number of times before succeeding."""
 
     def node(state: BidState) -> dict[str, object]:
         counter["calls"] = counter.get("calls", 0) + 1
         if counter["calls"] <= fail_times:
-            raise Boom("transient")
+            raise error("transient")
         return {"visited": [*state.visited, "flaky"]}
 
     return node
@@ -302,17 +304,29 @@ def test_a_node_that_never_succeeds_records_failure_without_aborting(tmp_path: P
     assert counter["calls"] == 3, "three attempts, then it gives up"
     flaky_step = next(s for s in final.steps if s.step_name == "flaky")
     assert flaky_step.status == "failed"
-    assert "Boom: transient" in (flaky_step.error or "")
+    assert "SimulatedTimeout: transient" in (flaky_step.error or "")
     # The run kept going: the node after the failure still ran.
     assert final.visited == ["before", "after"]
     assert [s.step_name for s in final.steps] == ["before", "flaky", "after"]
 
 
-def test_a_failed_step_makes_the_run_record_failed(tmp_path: Path) -> None:
+def test_a_failed_step_makes_the_run_completed_with_errors(tmp_path: Path) -> None:
     with open_checkpointer(config_for(tmp_path)) as saver:
         final = start(failing_graph(saver, flaky(99, {}), []), a_state())
 
-    assert to_agent_run(final, finished_at=AT).status == "failed"
+    record = to_agent_run(final, finished_at=AT)
+
+    assert record.status == "completed_with_errors"
+    assert record.has_failed_steps
+    assert [step.step_name for step in record.failed_steps] == ["flaky"]
+
+
+def test_a_run_with_a_failed_step_cannot_be_marked_completed(tmp_path: Path) -> None:
+    with open_checkpointer(config_for(tmp_path)) as saver:
+        final = start(failing_graph(saver, flaky(99, {}), []), a_state())
+
+    with pytest.raises(ValidationError, match="completed_with_errors"):
+        to_agent_run(final, finished_at=AT, status="completed")
 
 
 def test_backoff_waits_stay_inside_a_growing_window(tmp_path: Path) -> None:
@@ -398,3 +412,142 @@ def test_nodes_receive_the_projects_own_state_not_the_base(tmp_path: Path) -> No
     assert final.visited == ["seen"]
     assert final.quote_usd == 12.5
     assert all(step.status == "ok" for step in final.steps)
+
+
+# --- retry classification ----------------------------------------------------------------
+
+
+def raising(error: Exception, counter: dict[str, int]) -> NodeFn:
+    """A node that always raises the given error, counting its attempts."""
+
+    def node(state: BidState) -> dict[str, object]:
+        counter["calls"] = counter.get("calls", 0) + 1
+        raise error
+
+    return node
+
+
+def graph_with(
+    checkpointer: BaseCheckpointSaver, node: NodeFn, waits: list[float], **kw: object
+) -> CompiledStateGraph:
+    return build_graph(
+        BidState,
+        {"before": visit("before"), "boom": node, "after": visit("after")},
+        [(START, "before"), ("before", "boom"), ("boom", "after"), ("after", END)],
+        checkpointer=checkpointer,
+        retry=RetryConfig(max_attempts=3, initial_seconds=0.5),
+        sleep_fn=waits.append,
+        **kw,
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AttributeError("no such attribute"),
+        TypeError("wrong type"),
+        KeyError("missing"),
+        IndexError("out of range"),
+        NameError("undefined"),
+        ImportError("no module"),
+        AssertionError("invariant broken"),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+def test_a_programming_error_propagates_on_the_first_attempt(
+    tmp_path: Path, error: Exception
+) -> None:
+    counter: dict[str, int] = {}
+    waits: list[float] = []
+    with open_checkpointer(config_for(tmp_path)) as saver:
+        graph = graph_with(saver, raising(error, counter), waits)
+
+        with pytest.raises(type(error)):
+            start(graph, a_state())
+
+        assert counter["calls"] == 1, "a bug must not be retried"
+        assert waits == [], "and must not sleep between attempts"
+
+        # No trace was filed for it, and the run did not sail on to the next node.
+        state = _state_after_crash(graph)
+        assert [s.step_name for s in state.steps] == ["before"]
+        assert all(s.status == "ok" for s in state.steps)
+
+
+def _state_after_crash(graph: CompiledStateGraph) -> BidState:
+    """The state a crashed run left in its checkpoint."""
+    snapshot = graph.get_state({"configurable": {"thread_id": "run-1"}})
+    return BidState.model_validate(snapshot.values)
+
+
+def test_a_simulated_timeout_still_retries(tmp_path: Path) -> None:
+    counter: dict[str, int] = {}
+    waits: list[float] = []
+    with open_checkpointer(config_for(tmp_path)) as saver:
+        graph = graph_with(saver, raising(SimulatedTimeout("slow"), counter), waits)
+        final = start(graph, a_state())
+
+    assert counter["calls"] == 3, "a timeout is worth another attempt"
+    assert len(waits) == 2
+    boom = next(s for s in final.steps if s.step_name == "boom")
+    assert boom.status == "failed"
+    assert boom.metadata["attempts"] == 3
+    assert boom.metadata["retryable"] is True
+    assert final.visited == ["before", "after"], "the run carried on"
+
+
+def test_a_connection_error_still_retries(tmp_path: Path) -> None:
+    counter: dict[str, int] = {}
+    with open_checkpointer(config_for(tmp_path)) as saver:
+        start(graph_with(saver, raising(ConnectionResetError("reset"), counter), []), a_state())
+
+    assert counter["calls"] == 3
+
+
+def test_a_rate_limit_still_retries(tmp_path: Path) -> None:
+    import litellm
+
+    counter: dict[str, int] = {}
+    error = litellm.RateLimitError(message="slow down", llm_provider="anthropic", model="m")
+    with open_checkpointer(config_for(tmp_path)) as saver:
+        start(graph_with(saver, raising(error, counter), []), a_state())
+
+    assert counter["calls"] == 3, "a provider rate limit is transient"
+
+
+def test_an_unclassified_error_is_traced_without_retrying(tmp_path: Path) -> None:
+    counter: dict[str, int] = {}
+    waits: list[float] = []
+    with open_checkpointer(config_for(tmp_path)) as saver:
+        graph = graph_with(saver, raising(ValueError("bad data"), counter), waits)
+        final = start(graph, a_state())
+
+    assert counter["calls"] == 1, "nothing suggests a second attempt would differ"
+    assert waits == []
+    boom = next(s for s in final.steps if s.step_name == "boom")
+    assert boom.status == "failed"
+    assert boom.metadata["attempts"] == 1
+    assert boom.metadata["retryable"] is False
+    assert final.visited == ["before", "after"], "but the run still carried on"
+
+
+def test_retry_on_opts_an_extra_type_into_retrying(tmp_path: Path) -> None:
+    counter: dict[str, int] = {}
+    with open_checkpointer(config_for(tmp_path)) as saver:
+        start(
+            graph_with(saver, raising(ValueError("flaky"), counter), [], retry_on=(ValueError,)),
+            a_state(),
+        )
+
+    assert counter["calls"] == 3
+
+
+def test_retry_on_cannot_re_enable_retrying_a_programming_error(tmp_path: Path) -> None:
+    counter: dict[str, int] = {}
+    with open_checkpointer(config_for(tmp_path)) as saver:
+        graph = graph_with(saver, raising(KeyError("missing"), counter), [], retry_on=(KeyError,))
+
+        with pytest.raises(KeyError):
+            start(graph, a_state())
+
+    assert counter["calls"] == 1, "NEVER_RETRY wins over an explicit retry_on"

@@ -24,6 +24,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -41,6 +42,22 @@ from spine.contracts import AgentRun, ModelCall, RunStatus, StepTrace
 DEFAULT_SQLITE_PATH = Path(".checkpoints/graph.sqlite")
 DEFAULT_REVIEW_THRESHOLD = 0.7
 
+# A bug is not a transient fault. Retrying one wastes three attempts and then files the
+# defect as a failed step, which reads like a data problem and hides the stack trace. These
+# always propagate on the first attempt, untraced, and `retry_on` cannot override that.
+NEVER_RETRY: tuple[type[Exception], ...] = (
+    AttributeError,
+    TypeError,
+    KeyError,
+    IndexError,
+    NameError,
+    ImportError,
+    AssertionError,
+)
+
+# Faults a second attempt could plausibly survive.
+BASE_TRANSIENT_ERRORS: tuple[type[Exception], ...] = (TimeoutError, ConnectionError)
+
 __all__ = [
     "END",
     "START",
@@ -50,6 +67,7 @@ __all__ = [
     "NodeFn",
     "RetryConfig",
     "ReviewRequest",
+    "NEVER_RETRY",
     "build_graph",
     "human_review",
     "open_checkpointer",
@@ -204,6 +222,27 @@ def open_checkpointer(
 type NodeFn = Callable[..., Mapping[str, object] | None]
 
 
+@cache
+def transient_errors() -> tuple[type[Exception], ...]:
+    """The exception types a node retry treats as worth another attempt.
+
+    Adds the provider's rate-limit and connection classes when litellm is importable.
+    Imported lazily and cached, so a graph that never fails never pays for the import.
+    """
+    try:
+        import litellm
+    except ImportError:  # pragma: no cover - litellm is a hard dependency of spine
+        return BASE_TRANSIENT_ERRORS
+    return (
+        *BASE_TRANSIENT_ERRORS,
+        litellm.RateLimitError,
+        litellm.APIConnectionError,
+        litellm.ServiceUnavailableError,
+        litellm.InternalServerError,
+        litellm.Timeout,
+    )
+
+
 def _backoff_delay(attempt: int, retry: RetryConfig, rng: random.Random) -> float:
     """Full-jitter backoff: a random wait inside an exponentially growing window."""
     window = min(retry.initial_seconds * (2**attempt), retry.max_seconds)
@@ -215,19 +254,32 @@ def with_retry(
     *,
     name: str,
     retry: RetryConfig | None = None,
+    retry_on: tuple[type[Exception], ...] = (),
     sleep_fn: Callable[[float], None] = time.sleep,
     now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
     rng: random.Random | None = None,
 ) -> NodeFn:
-    """Wrap a node so it retries, records a StepTrace, and never aborts the run.
+    """Wrap a node so it retries what is worth retrying, traces the step, and keeps going.
 
-    On success the step is traced `ok`. When every attempt fails the step is traced
-    `failed` with the error, and the graph carries on to the next node — a step that could
-    not be completed is a fact about the run, not a reason to lose the days of work behind
-    it. A `GraphBubbleUp` (which is how an interrupt travels) is re-raised untouched.
+    Three outcomes, by the kind of failure:
+
+    - A programming error (`NEVER_RETRY`: AttributeError, TypeError, KeyError, IndexError,
+      NameError, ImportError, AssertionError) propagates on the first attempt with no
+      retries and no trace. A bug must crash loudly, not be reattempted three times and
+      then filed as a failed step where it reads like bad data. `retry_on` cannot override
+      this.
+    - A transient fault — network, timeout, provider rate limit, or anything in `retry_on`
+      — is reattempted with jittered backoff. If every attempt fails the step is traced
+      `failed` and the run carries on: a step that could not finish is a fact about the
+      run, not a reason to lose the days of work behind it.
+    - Any other exception is traced `failed` immediately, without retries, since nothing
+      suggests a second attempt would differ.
+
+    A `GraphBubbleUp` (how an interrupt travels) is always re-raised untouched.
     """
     policy = retry or RetryConfig()
     jitter = rng or random.Random()
+    retryable = (*transient_errors(), *retry_on)
 
     def node(state: GraphState) -> Mapping[str, object]:
         started_at = now_fn()
@@ -240,8 +292,13 @@ def with_retry(
                 # An interrupt is control flow, not a failure. Swallowing it here would
                 # break human review outright.
                 raise
+            except NEVER_RETRY:
+                # A defect in the node. Let it reach the caller with its stack intact.
+                raise
             except Exception as error:  # noqa: BLE001 - a node may raise anything
                 last_error = error
+                if not isinstance(error, retryable):
+                    break
                 if attempt < policy.max_attempts - 1:
                     sleep_fn(_backoff_delay(attempt, policy, jitter))
                 continue
@@ -254,13 +311,14 @@ def with_retry(
             )
             return {**update, "steps": [trace]}
 
+        attempts_made = attempt + 1
         trace = StepTrace(
             step_name=name,
             started_at=started_at,
             finished_at=now_fn(),
             status="failed",
             error=f"{type(last_error).__name__}: {last_error}",
-            metadata={"attempts": policy.max_attempts},
+            metadata={"attempts": attempts_made, "retryable": isinstance(last_error, retryable)},
         )
         return {"steps": [trace]}
 
@@ -274,6 +332,7 @@ def build_graph(
     *,
     checkpointer: BaseCheckpointSaver,
     retry: RetryConfig | None = None,
+    retry_on: tuple[type[Exception], ...] = (),
     sleep_fn: Callable[[float], None] = time.sleep,
     now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> CompiledStateGraph:
@@ -296,7 +355,14 @@ def build_graph(
         # silently stripping every field the project added.
         builder.add_node(
             name,
-            with_retry(fn, name=name, retry=retry, sleep_fn=sleep_fn, now_fn=now_fn),
+            with_retry(
+                fn,
+                name=name,
+                retry=retry,
+                retry_on=retry_on,
+                sleep_fn=sleep_fn,
+                now_fn=now_fn,
+            ),
             input_schema=state_schema,
         )
     for source, target in edges:
@@ -403,12 +469,18 @@ def to_agent_run(
 ) -> AgentRun:
     """Assemble the immutable run record from the state accumulated so far.
 
-    Status is derived when not given: `failed` if any step failed, else `completed`. A
-    paused run cannot be recognised from state alone — the interrupt lives in the
-    checkpoint, not the state — so use `run_record`, which can see it.
+    Status is derived when not given: `completed_with_errors` if any step failed, else
+    `completed`. A run that finished while a step failed is never plain `completed` —
+    AgentRun rejects that combination outright. A paused run cannot be recognised from
+    state alone, since the interrupt lives in the checkpoint rather than the state, so use
+    `run_record`, which can see it.
     """
     if status is None:
-        status = "failed" if any(step.status == "failed" for step in state.steps) else "completed"
+        status = (
+            "completed_with_errors"
+            if any(step.status == "failed" for step in state.steps)
+            else "completed"
+        )
     return AgentRun(
         run_id=state.run_id,
         project=state.project,
