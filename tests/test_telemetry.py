@@ -27,6 +27,7 @@ from spine.telemetry import (
     current_run,
     get_tracer,
     redact,
+    scrub_secrets,
     set_tracer,
     trace_run,
     traced,
@@ -415,6 +416,118 @@ def test_a_secret_kwarg_never_reaches_the_tracer(recorder: Recorder) -> None:
     payload = recorder.only.payload
     assert payload["kwargs"]["api_key"] == REDACTED
     assert "sk-ant-do-not-send" not in str(payload)
+
+
+# --- secrets caught by shape, not just by key name -------------------------------------
+
+ANTHROPIC_KEY = "sk-ant-api03-AbCdEf0123456789-_xyz"
+LANGFUSE_SECRET = "sk-lf-1a2b3c4d-5e6f-7890-abcd-ef1234567890"
+LANGFUSE_PUBLIC = "pk-lf-1a2b3c4d-5e6f-7890-abcd-ef1234567890"
+DATABASE_URL = "postgresql://tender_user:s3cr3t-pw@db.example.com:5432/agent_portfolio"
+
+
+@pytest.mark.parametrize(
+    ("secret", "label"),
+    [
+        (ANTHROPIC_KEY, "anthropic"),
+        (LANGFUSE_SECRET, "langfuse-secret"),
+        (LANGFUSE_PUBLIC, "langfuse-public"),
+        (DATABASE_URL, "database-url"),
+    ],
+    ids=lambda value: value if isinstance(value, str) and len(value) < 20 else "secret",
+)
+def test_a_secret_is_caught_as_a_whole_value(secret: str, label: str) -> None:
+    assert scrub_secrets(secret) == REDACTED
+
+
+@pytest.mark.parametrize(
+    ("secret", "label"),
+    [
+        (ANTHROPIC_KEY, "anthropic"),
+        (LANGFUSE_SECRET, "langfuse-secret"),
+        (LANGFUSE_PUBLIC, "langfuse-public"),
+        (DATABASE_URL, "database-url"),
+    ],
+    ids=lambda value: value if isinstance(value, str) and len(value) < 20 else "secret",
+)
+def test_a_secret_is_caught_inside_a_sentence(secret: str, label: str) -> None:
+    sentence = f"The clause says to use {secret} when connecting, then stop."
+
+    scrubbed = scrub_secrets(sentence)
+
+    assert secret not in scrubbed
+    assert REDACTED in scrubbed
+    assert scrubbed.startswith("The clause says to use ")
+    assert scrubbed.endswith(" when connecting, then stop.")
+
+
+def test_several_secrets_in_one_string_are_all_caught() -> None:
+    text = f"key={ANTHROPIC_KEY} pub={LANGFUSE_PUBLIC} db={DATABASE_URL}"
+
+    scrubbed = scrub_secrets(text)
+
+    for secret in (ANTHROPIC_KEY, LANGFUSE_PUBLIC, DATABASE_URL):
+        assert secret not in scrubbed
+    assert scrubbed.count(REDACTED) == 3
+
+
+@pytest.mark.parametrize(
+    "harmless",
+    [
+        "https://cloud.langfuse.com",
+        "postgresql://localhost:5432/agent_portfolio",
+        "claude-sonnet-5",
+        "The tender closes on Friday at 17:00.",
+        "ratio: 0.82",
+    ],
+)
+def test_ordinary_text_is_not_mangled(harmless: str) -> None:
+    # A host with no userinfo, a model name and plain prose must survive untouched.
+    assert scrub_secrets(harmless) == harmless
+
+
+def test_a_secret_passed_positionally_never_reaches_the_tracer(recorder: Recorder) -> None:
+    # The gap this closes: no key name to match on, so only the value's shape gives it away.
+    @traced("node.extract", "extract")
+    def node(text: str) -> str:
+        return text
+
+    node(f"Authenticate with {ANTHROPIC_KEY} before extracting.")
+
+    payload = str(recorder.only.payload)
+    assert ANTHROPIC_KEY not in payload
+    assert REDACTED in payload
+
+
+def test_a_secret_in_a_return_value_never_reaches_the_tracer(recorder: Recorder) -> None:
+    @traced("node.extract", "extract")
+    def node() -> str:
+        return f"connect to {DATABASE_URL}"
+
+    node()
+
+    assert DATABASE_URL not in str(recorder.only.output)
+
+
+def test_a_secret_inside_a_nested_structure_is_caught(recorder: Recorder) -> None:
+    @traced("node.extract", "extract")
+    def node(payload: dict[str, object]) -> str:
+        return "ok"
+
+    node({"config": {"connection": DATABASE_URL, "notes": ["see " + ANTHROPIC_KEY]}})
+
+    sent = str(recorder.only.payload)
+    assert DATABASE_URL not in sent
+    assert ANTHROPIC_KEY not in sent
+
+
+def test_a_secret_is_scrubbed_before_truncation_not_after() -> None:
+    # Truncating first would cut a key in half and ship the front of it.
+    padding = "x" * (TEXT_LIMIT - 10)
+    scrubbed = redact(padding + ANTHROPIC_KEY)
+
+    assert "sk-ant-" not in scrubbed
+    assert REDACTED in scrubbed
 
 
 def test_long_text_is_truncated_with_a_visible_marker() -> None:

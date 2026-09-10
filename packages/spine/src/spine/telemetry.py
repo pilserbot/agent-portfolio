@@ -9,6 +9,14 @@ LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY absent this module is a no-op, and e
 configured a telemetry failure is swallowed rather than propagated. A missing dashboard
 must never fail a bid.
 
+Redaction works two ways: a value under a key that names a credential is replaced, and a
+value shaped like one — an Anthropic key, a Langfuse key, a URL carrying userinfo — is
+replaced wherever it appears, including inside a longer string. The residual limitation is
+real and worth stating: a credential that matches none of those patterns and arrives with
+no telling key name, such as a bare token passed positionally, is only length-truncated and
+will otherwise be sent. Keep secrets in named arguments, and add a pattern here when a new
+credential shape enters the project.
+
 Deliberately does not: decide, retry, or alter what it observes — a traced function
 returns exactly what it would have returned untraced, and an exception raised inside it
 propagates unchanged. It does not flush on every call (the SDK batches in the background,
@@ -19,6 +27,7 @@ for secrets and truncated past TEXT_LIMIT characters before they leave the proce
 import functools
 import logging
 import os
+import re
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
@@ -52,18 +61,35 @@ SECRET_KEY_HINTS = (
 )
 REDACTED = "[redacted]"
 
+# Secrets that arrive without a telling key name — a bare positional argument, or one
+# quoted inside a longer sentence — are caught by shape instead. Matched anywhere in a
+# string, not just when the string is the whole value.
+SECRET_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Anthropic API key.
+    re.compile(r"sk-ant-[A-Za-z0-9_\-]+"),
+    # Langfuse secret and public keys.
+    re.compile(r"[sp]k-lf-[A-Za-z0-9_\-]+"),
+    # Any URL carrying credentials, e.g. postgresql://user:password@host:5432/db. The
+    # userinfo is required, so an ordinary https://host/path is left alone.
+    re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@]+:[^\s/@]+@\S+"),
+)
+
 type ObservationKind = Literal["span", "generation"]
 
 __all__ = [
     "REDACTED",
     "TEXT_LIMIT",
+    "LangfuseTracer",
+    "Observation",
     "RunContext",
     "TelemetryConfig",
     "configure",
     "current_run",
     "flush",
     "get_tracer",
+    "set_tracer",
     "redact",
+    "scrub_secrets",
     "shutdown",
     "trace_run",
     "traced",
@@ -108,6 +134,13 @@ class RunContext(BaseModel):
 _current_run: ContextVar[RunContext | None] = ContextVar("spine_current_run", default=None)
 
 
+def scrub_secrets(text: str) -> str:
+    """Replace anything shaped like a credential, wherever it appears in the text."""
+    for pattern in SECRET_VALUE_PATTERNS:
+        text = pattern.sub(REDACTED, text)
+    return text
+
+
 def truncate(text: str, limit: int = TEXT_LIMIT) -> str:
     """Shorten text past the limit, leaving a marker that says what was cut."""
     if len(text) <= limit:
@@ -131,7 +164,7 @@ def redact(value: object, *, limit: int = TEXT_LIMIT, _depth: int = 0) -> object
     if _depth > MAX_DEPTH:
         return f"[depth limit reached: {type(value).__name__}]"
     if isinstance(value, str):
-        return truncate(value, limit)
+        return truncate(scrub_secrets(value), limit)
     if isinstance(value, bool | int | float | type(None)):
         return value
     if isinstance(value, Decimal):
@@ -149,7 +182,7 @@ def redact(value: object, *, limit: int = TEXT_LIMIT, _depth: int = 0) -> object
         }
     if isinstance(value, Sequence):
         return [redact(item, limit=limit, _depth=_depth + 1) for item in value]
-    return truncate(repr(value), limit)
+    return truncate(scrub_secrets(repr(value)), limit)
 
 
 class Tracer:
@@ -270,6 +303,11 @@ class LangfuseTracer(Tracer):
     def is_enabled(self) -> bool:
         """Observations reach a backend."""
         return True
+
+    @property
+    def client(self) -> object:
+        """The underlying SDK client, for callers that need to read traces back."""
+        return self._client
 
     @contextmanager
     def run(self, context: RunContext) -> Iterator[None]:
