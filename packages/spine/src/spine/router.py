@@ -29,7 +29,8 @@ from litellm.types.utils import ModelResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from spine.contracts import ModelCall
-from spine.telemetry import traced
+from spine.replay import CallRequest, CallResponse, CassetteEntry, ReplaySession
+from spine.telemetry import current_run, traced
 
 Tier = Literal["large", "small"]
 
@@ -37,6 +38,10 @@ DEFAULT_MODEL_LARGE = "claude-sonnet-5"
 DEFAULT_MODEL_SMALL = "claude-haiku-4-5-20251001"
 DEFAULT_DAILY_SPEND_CAP_USD = Decimal("10.00")
 DEFAULT_LEDGER_PATH = Path(".spend/ledger.json")
+
+# Where a cassette entry is filed when a call happens outside any run context.
+DEFAULT_CASSETTE_PROJECT = "unknown"
+DEFAULT_CASSETTE_RUN = "adhoc"
 
 MAX_ATTEMPTS = 4
 BACKOFF_BASE_SECONDS = 0.5
@@ -64,6 +69,10 @@ class SpendCapExceeded(RouterError):
     Raised before the request is made. This is a control, not a warning: there is no
     override argument, and the caller cannot proceed by ignoring it.
     """
+
+
+class ReplayKindMismatch(RouterError):
+    """A cassette entry exists for the fingerprint but was recorded from the other call kind."""
 
 
 class PricingUnavailable(RouterError):
@@ -133,8 +142,13 @@ class CostLedger:
         """Every call recorded by this process, in the order they were made."""
         return tuple(self._calls)
 
-    def record(self, call: ModelCall) -> DailyTotal:
-        """Add a call to the ledger and return the day's new total."""
+    def record(self, call: ModelCall, *, persist: bool = True) -> DailyTotal:
+        """Add a call to the ledger and return the day's new total.
+
+        `persist=False` keeps the call in memory without writing it to the shared file:
+        a replayed call belongs in the run's record but costs nothing, and writing it
+        would walk a real daily cap toward its limit on money nobody spent.
+        """
         self._calls.append(call)
         day = call.timestamp.astimezone(UTC).date()
         totals = self._read_totals()
@@ -144,6 +158,8 @@ class CostLedger:
             total_usd=Decimal(str(previous["total_usd"])) + call.cost_usd,
             call_count=int(previous["call_count"]) + 1,
         )
+        if not persist:
+            return updated
         totals[day.isoformat()] = {
             "total_usd": str(updated.total_usd),
             "call_count": updated.call_count,
@@ -218,6 +234,7 @@ class Router:
         *,
         ledger: CostLedger | None = None,
         completion_fn: Callable[..., ModelResponse] | None = None,
+        replay: ReplaySession | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         now_fn: Callable[[], datetime] = lambda: datetime.now(UTC),
         rng: random.Random | None = None,
@@ -226,6 +243,7 @@ class Router:
         self.config = config or RouterConfig.from_env()
         self.ledger = ledger or CostLedger(self.config.ledger_path)
         self._completion_fn = completion_fn or litellm.completion
+        self.replay = replay or ReplaySession.from_env()
         self._sleep = sleep_fn
         self._now = now_fn
         self._rng = rng or random.Random()
@@ -240,8 +258,22 @@ class Router:
         cache_prompt: bool = True,
         **kwargs: object,
     ) -> tuple[str, ModelCall]:
-        """Send a prompt and return the reply text with the record of what it cost."""
+        """Send a prompt and return the reply text with the record of what it cost.
+
+        In replay mode the answer comes from a cassette and no request is made.
+        """
         model = self.config.model_for(tier)
+        request = CallRequest(model=model, tier=tier, purpose=purpose, prompt=prompt)
+
+        if self.replay.is_replaying:
+            entry = self._replayed(request)
+            if entry.response.text is None:
+                raise ReplayKindMismatch(
+                    f"cassette entry {entry.fingerprint} was recorded from a structured call; "
+                    f"complete() cannot serve it."
+                )
+            return entry.response.text, entry.response.call
+
         self._guard_spend_cap(model)
         messages = _build_messages(prompt, model=model, cache_prompt=cache_prompt)
 
@@ -252,7 +284,9 @@ class Router:
         latency_ms = int((time.monotonic() - started) * 1000)
 
         call = self._record(response, model=model, purpose=purpose, latency_ms=latency_ms)
-        return self._text_of(response), call
+        text = self._text_of(response)
+        self._maybe_record_cassette(request, CallResponse(text=text, call=call))
+        return text, call
 
     @traced("router.structured", "extraction", kind="generation")
     def structured(
@@ -271,6 +305,17 @@ class Router:
         up to `STRUCTURED_VALIDATION_RETRIES` times after the first attempt.
         """
         model = self.config.model_for(tier)
+        request = CallRequest(model=model, tier=tier, purpose=purpose, prompt=prompt)
+
+        if self.replay.is_replaying:
+            entry = self._replayed(request)
+            if entry.response.structured_json is None:
+                raise ReplayKindMismatch(
+                    f"cassette entry {entry.fingerprint} was recorded from a text call; "
+                    f"structured() cannot serve it."
+                )
+            return schema.model_validate_json(entry.response.structured_json), entry.response.call
+
         self._guard_spend_cap(model)
         messages = _build_messages(prompt, model=model, cache_prompt=cache_prompt)
         client = instructor.from_litellm(self._completion_fn, mode=instructor.Mode.JSON)
@@ -288,7 +333,35 @@ class Router:
         latency_ms = int((time.monotonic() - started) * 1000)
 
         call = self._record(response, model=model, purpose=purpose, latency_ms=latency_ms)
+        self._maybe_record_cassette(
+            request, CallResponse(structured_json=obj.model_dump_json(), call=call)
+        )
         return obj, call
+
+    def _run_identity(self) -> tuple[str, str]:
+        """Which run a cassette entry belongs to, from the ambient telemetry context."""
+        run = current_run()
+        if run is None:
+            return DEFAULT_CASSETTE_PROJECT, DEFAULT_CASSETTE_RUN
+        return run.project, run.run_id
+
+    def _replayed(self, request: CallRequest) -> CassetteEntry:
+        """Serve a call from a cassette, recording it in memory but spending nothing.
+
+        The spend cap is not consulted: a replayed call costs nothing, so refusing it
+        would only stop a demo that was never going to spend.
+        """
+        project, run_id = self._run_identity()
+        entry = self.replay.lookup(request, project=project, run_id=run_id)
+        self.ledger.record(entry.response.call, persist=False)
+        return entry
+
+    def _maybe_record_cassette(self, request: CallRequest, response: CallResponse) -> None:
+        """Append a live call to the run's cassette when recording."""
+        if not self.replay.is_recording:
+            return
+        project, run_id = self._run_identity()
+        self.replay.record(request, response, project=project, run_id=run_id)
 
     def _guard_spend_cap(self, model: str) -> None:
         """Refuse the call outright if today's spend has reached the cap."""

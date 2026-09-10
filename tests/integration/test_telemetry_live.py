@@ -28,6 +28,7 @@ from spine.telemetry import (
 )
 
 PROJECT = "spine-integration"
+OBSERVATION_NAME = "integration.smoke"
 INGESTION_TIMEOUT_SECONDS = 90
 POLL_INTERVAL_SECONDS = 3
 
@@ -77,7 +78,7 @@ def test_a_trace_reaches_langfuse_and_can_be_read_back(live_tracer: LangfuseTrac
     # The same deterministic id the tracer seeds from the run id.
     trace_id = type(client).create_trace_id(seed=run_id)
 
-    @traced("integration.smoke", "integration-smoke", kind="generation")
+    @traced(OBSERVATION_NAME, "integration-smoke", kind="generation")
     def emit(prompt: str, *, purpose: str) -> tuple[str, ModelCall]:
         return "ok", a_model_call()
 
@@ -88,29 +89,40 @@ def test_a_trace_reaches_langfuse_and_can_be_read_back(live_tracer: LangfuseTrac
     assert call.cost_usd == Decimal("0.00123")
 
     tracer.flush()
-    fetched = _await_trace(client, trace_id)
+    fetched = _await_observation(client, trace_id, OBSERVATION_NAME)
 
     assert fetched.id == trace_id, "the trace landed under the id seeded from the run id"
     assert PROJECT in (fetched.tags or []), "the trace is tagged with the project"
 
-    names = [observation.name for observation in (fetched.observations or [])]
-    assert "integration.smoke" in names, f"expected the emitted observation, got {names}"
+    # The poll only returns once the observation is present, so reaching here is the proof
+    # that the emitted span was accepted and indexed. Nothing is asserted about how
+    # Langfuse renders its type or usage: those response shapes are unverified here, and an
+    # assertion written blind would fail for its own reasons rather than the path's.
+    assert any(item.name == OBSERVATION_NAME for item in fetched.observations)
 
 
-def _await_trace(client: object, trace_id: str) -> object:
-    """Poll for the trace until ingestion catches up, or fail with what was seen.
+def _await_observation(client: object, trace_id: str, name: str) -> object:
+    """Poll until the trace carries the named observation, or fail saying what was seen.
 
-    Langfuse ingests asynchronously, so a fetch straight after flush usually misses.
+    Waiting for the trace alone is not enough: Langfuse ingests asynchronously and the
+    trace record is queryable before its observations are indexed, so a poll that stops at
+    the first successful fetch reads an empty observation list and looks like a failure.
     """
     deadline = time.monotonic() + INGESTION_TIMEOUT_SECONDS
     last_error: Exception | None = None
+    last_names: list[str] = []
     while time.monotonic() < deadline:
         try:
-            return client.api.trace.get(trace_id)
+            trace = client.api.trace.get(trace_id)
         except Exception as error:  # noqa: BLE001 - not-found is expected until it lands
             last_error = error
-            time.sleep(POLL_INTERVAL_SECONDS)
+        else:
+            last_names = [item.name for item in (trace.observations or [])]
+            if name in last_names:
+                return trace
+        time.sleep(POLL_INTERVAL_SECONDS)
     pytest.fail(
-        f"trace {trace_id} did not appear within {INGESTION_TIMEOUT_SECONDS}s; "
-        f"last error was {type(last_error).__name__}: {last_error}"
+        f"observation {name!r} did not appear on trace {trace_id} within "
+        f"{INGESTION_TIMEOUT_SECONDS}s. Last observations seen: {last_names}. "
+        f"Last fetch error: {type(last_error).__name__ if last_error else 'none'}."
     )
