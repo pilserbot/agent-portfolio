@@ -38,6 +38,7 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, ConfigDict, Field
 
 from spine.contracts import AgentRun, ModelCall, RunStatus, StepTrace
+from spine.telemetry import trace_run, traced
 
 DEFAULT_SQLITE_PATH = Path(".checkpoints/graph.sqlite")
 DEFAULT_REVIEW_THRESHOLD = 0.7
@@ -353,10 +354,12 @@ def build_graph(
         # input_schema is essential, not decorative: without it LangGraph infers the node's
         # input from the wrapper's own annotation and hands nodes the GraphState base,
         # silently stripping every field the project added.
+        # traced sits inside with_retry, so each attempt is its own observation rather
+        # than one span hiding three tries.
         builder.add_node(
             name,
             with_retry(
-                fn,
+                traced(f"node.{name}", name)(fn),
                 name=name,
                 retry=retry,
                 retry_on=retry_on,
@@ -419,7 +422,8 @@ def _state_of[StateT: GraphState](graph: CompiledStateGraph, run_id: str) -> Sta
 
 def start[StateT: GraphState](graph: CompiledStateGraph, state: StateT) -> StateT:
     """Begin a run and return its state, whether it finished or paused for review."""
-    graph.invoke(state, _config(state.run_id))
+    with trace_run(state.run_id, state.project):
+        graph.invoke(state, _config(state.run_id))
     return _state_of(graph, state.run_id)
 
 
@@ -434,7 +438,9 @@ def resume[StateT: GraphState](
     rebuilds the same graph and passes it here. Everything else comes off the checkpoint.
     """
     payload = [decision.model_dump(mode="json") for decision in decisions]
-    graph.invoke(Command(resume=payload), _config(run_id))
+    resumed = _state_of(graph, run_id)
+    with trace_run(run_id, resumed.project):
+        graph.invoke(Command(resume=payload), _config(run_id))
     return _state_of(graph, run_id)
 
 
