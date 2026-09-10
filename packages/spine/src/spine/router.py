@@ -29,6 +29,7 @@ from litellm.types.utils import ModelResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from spine.contracts import ModelCall
+from spine.telemetry import traced
 
 Tier = Literal["large", "small"]
 
@@ -229,6 +230,7 @@ class Router:
         self._now = now_fn
         self._rng = rng or random.Random()
 
+    @traced("router.complete", "model_call", kind="generation")
     def complete(
         self,
         prompt: str,
@@ -252,6 +254,7 @@ class Router:
         call = self._record(response, model=model, purpose=purpose, latency_ms=latency_ms)
         return self._text_of(response), call
 
+    @traced("router.structured", "extraction", kind="generation")
     def structured(
         self,
         prompt: str,
