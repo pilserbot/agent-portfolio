@@ -1,0 +1,31 @@
+# A rubric is data, not a string in code: it is versioned here so a score can always be
+# traced to the exact wording that produced it. Bump `version` on any change to the
+# criteria, the weights or the threshold — a changed rubric is a different instrument, and
+# scores from two versions are not comparable.
+name: example
+version: 1
+description: >-
+  Whether a drafted tender response addresses the requirement it was asked about and shows
+  where its claims come from.
+pass_threshold: 0.7
+instructions: >-
+  Read the requirement and the drafted response. Score each criterion from 0.0 to 1.0,
+  where 0.0 means the criterion is not met at all and 1.0 means it is fully met. Judge only
+  what the response actually says; do not reward intent, fluency or length. Then explain
+  your scores in two or three sentences, naming the specific wording that decided each one.
+criteria:
+  - id: addresses_requirement
+    weight: 0.5
+    description: >-
+      The response answers the requirement that was asked about, rather than a neighbouring
+      or more convenient one.
+  - id: commitment_is_specific
+    weight: 0.3
+    description: >-
+      Any commitment is concrete enough to be held to: a number, a deadline, a named
+      standard, rather than "as required" or "best endeavours".
+  - id: evidence_is_shown
+    weight: 0.2
+    description: >-
+      Claims about the bidder's capability point at something checkable — a certification, a
+      prior contract, a document reference — rather than being asserted.
