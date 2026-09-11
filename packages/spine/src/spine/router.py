@@ -147,7 +147,9 @@ class CostLedger:
 
         `persist=False` keeps the call in memory without writing it to the shared file:
         a replayed call belongs in the run's record but costs nothing, and writing it
-        would walk a real daily cap toward its limit on money nobody spent.
+        would walk a real daily cap toward its limit on money nobody spent. A call the
+        record itself says was replayed is never persisted, whatever the caller asked
+        for — the cap is a control, so the check belongs on this side of the call too.
         """
         self._calls.append(call)
         day = call.timestamp.astimezone(UTC).date()
@@ -158,7 +160,7 @@ class CostLedger:
             total_usd=Decimal(str(previous["total_usd"])) + call.cost_usd,
             call_count=int(previous["call_count"]) + 1,
         )
-        if not persist:
+        if not persist or not call.was_billed:
             return updated
         totals[day.isoformat()] = {
             "total_usd": str(updated.total_usd),
@@ -350,9 +352,19 @@ class Router:
 
         The spend cap is not consulted: a replayed call costs nothing, so refusing it
         would only stop a demo that was never going to spend.
+
+        The served call is stamped `mode="replay"` rather than handed back with the mode
+        it was recorded under. Without that, a replayed call is indistinguishable from a
+        live one in the run record, and a KPI computed from a demo would be plausible and
+        wrong. The cost figure is left exactly as recorded: it is what the call cost when
+        it was really made, which is worth knowing — it is simply not money spent now.
         """
         project, run_id = self._run_identity()
         entry = self.replay.lookup(request, project=project, run_id=run_id)
+        served = entry.response.model_copy(
+            update={"call": entry.response.call.model_copy(update={"mode": "replay"})}
+        )
+        entry = entry.model_copy(update={"response": served})
         self.ledger.record(entry.response.call, persist=False)
         return entry
 
@@ -401,6 +413,9 @@ class Router:
             latency_ms=latency_ms,
             timestamp=self._now(),
             purpose=purpose,
+            # "record" and "live" both reached a provider and spent money; the distinction
+            # is only that one was also written to a cassette.
+            mode=self.replay.mode,
         )
         self.ledger.record(call)
         return call

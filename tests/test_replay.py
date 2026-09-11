@@ -209,7 +209,10 @@ def test_record_then_replay_reproduces_identical_output(tmp_path: Path) -> None:
         )
 
     assert replayed_text == recorded_text == "the recorded answer"
-    assert replayed_call == recorded_call
+    # Identical in every respect but the one that must differ: what the work cost is
+    # reproduced verbatim, and `mode` is the only thing saying it was not spent again.
+    assert replayed_call.model_dump(exclude={"mode"}) == recorded_call.model_dump(exclude={"mode"})
+    assert (recorded_call.mode, replayed_call.mode) == ("record", "replay")
     assert replayed_call.cost_usd == recorded_call.cost_usd
     assert replayed_call.prompt_tokens == recorded_call.prompt_tokens
 
@@ -276,7 +279,8 @@ def test_a_structured_call_records_and_replays(tmp_path: Path) -> None:
     # Compared by value: instructor attaches the raw response as a private attribute, so
     # the object it returns is never == to one freshly validated from JSON.
     assert replayed.model_dump() == recorded.model_dump() == {"name": "Ada", "age": 36}
-    assert replayed_call == recorded_call
+    assert replayed_call.model_dump(exclude={"mode"}) == recorded_call.model_dump(exclude={"mode"})
+    assert (recorded_call.mode, replayed_call.mode) == ("record", "replay")
 
 
 def test_a_text_recording_cannot_serve_a_structured_call(tmp_path: Path) -> None:
@@ -569,3 +573,118 @@ def test_a_recorded_cassette_verifies_clean(tmp_path: Path) -> None:
 
     assert report.entries == 2
     assert report.is_valid
+
+
+# --- the mode stamped onto every ModelCall ----------------------------------------------
+#
+# Without this, a replayed call is indistinguishable from a live one in the run record, and
+# a KPI computed from a demo is plausible and wrong. spine.kpi refuses on the strength of
+# this field, so these tests are what makes that refusal possible.
+
+
+def test_a_live_call_is_stamped_live(tmp_path: Path) -> None:
+    live, _record, _replay = sessions(tmp_path)
+
+    _text, call = a_router(tmp_path, Counter(), live).complete("hi", purpose="p")
+
+    assert call.mode == "live"
+    assert call.was_billed
+
+
+def test_a_recorded_call_is_stamped_record_because_it_really_spent_money(tmp_path: Path) -> None:
+    _live, record, _replay = sessions(tmp_path)
+
+    with trace_run(RUN, PROJECT):
+        _text, call = a_router(tmp_path, Counter(), record).complete("hi", purpose="p")
+
+    assert call.mode == "record"
+    assert call.was_billed
+
+
+def test_a_replayed_call_is_stamped_replay_not_the_mode_it_was_recorded_under(
+    tmp_path: Path,
+) -> None:
+    _live, record, replay = sessions(tmp_path)
+    with trace_run(RUN, PROJECT):
+        a_router(tmp_path, Counter(), record).complete("hi", purpose="p")
+
+    with trace_run("a-different-run", PROJECT):
+        _text, call = a_router(tmp_path, explodes, replay).complete("hi", purpose="p")
+
+    assert call.mode == "replay"
+    assert not call.was_billed
+
+
+def test_a_replayed_call_keeps_the_cost_it_was_recorded_with(tmp_path: Path) -> None:
+    # The cost is what the call cost when it was really made, which is worth knowing. It is
+    # simply not money spent now, and `mode` is what says so.
+    _live, record, replay = sessions(tmp_path)
+    with trace_run(RUN, PROJECT):
+        _text, recorded = a_router(tmp_path, Counter(), record).complete("hi", purpose="p")
+
+    with trace_run(RUN, PROJECT):
+        _text, replayed = a_router(tmp_path, explodes, replay).complete("hi", purpose="p")
+
+    assert replayed.cost_usd == recorded.cost_usd > Decimal("0")
+
+
+def test_a_replayed_structured_call_is_stamped_replay(tmp_path: Path) -> None:
+    _live, record, replay = sessions(tmp_path)
+    entry = CassetteEntry(
+        fingerprint=CallRequest(
+            model=DEFAULT_MODEL_LARGE, tier="large", purpose="extract", prompt="who"
+        ).fingerprint,
+        request=CallRequest(
+            model=DEFAULT_MODEL_LARGE, tier="large", purpose="extract", prompt="who"
+        ),
+        response=CallResponse(
+            structured_json=Person(name="Ada", age=36).model_dump_json(),
+            call=ModelCall(
+                provider="anthropic",
+                model=DEFAULT_MODEL_LARGE,
+                prompt_tokens=10,
+                completion_tokens=5,
+                cost_usd=Decimal("0.01"),
+                latency_ms=12,
+                timestamp=AT,
+                purpose="extract",
+                mode="live",
+            ),
+        ),
+        recorded_at=AT,
+    )
+    Cassette(replay.cassette_path(PROJECT, RUN)).append(entry)
+
+    with trace_run(RUN, PROJECT):
+        _obj, call = a_router(tmp_path, explodes, replay).structured(
+            "who", Person, purpose="extract"
+        )
+
+    assert call.mode == "replay"
+
+
+def test_the_cassette_on_disk_is_not_rewritten_by_replaying_it(tmp_path: Path) -> None:
+    # The recording is a record of a live call. Serving it must not retroactively relabel it.
+    _live, record, replay = sessions(tmp_path)
+    with trace_run(RUN, PROJECT):
+        a_router(tmp_path, Counter(), record).complete("hi", purpose="p")
+    path = replay.cassette_path(PROJECT, RUN)
+
+    with trace_run(RUN, PROJECT):
+        a_router(tmp_path, explodes, replay).complete("hi", purpose="p")
+
+    stored = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    assert [entry["response"]["call"]["mode"] for entry in stored] == ["record"]
+
+
+def test_a_replayed_call_never_walks_the_persisted_daily_total(tmp_path: Path) -> None:
+    _live, record, replay = sessions(tmp_path)
+    with trace_run(RUN, PROJECT):
+        a_router(tmp_path, Counter(), record).complete("hi", purpose="p")
+    ledger_path = tmp_path / "ledger.json"
+    before = ledger_path.read_text(encoding="utf-8")
+
+    with trace_run(RUN, PROJECT):
+        a_router(tmp_path, explodes, replay).complete("hi", purpose="p")
+
+    assert ledger_path.read_text(encoding="utf-8") == before
