@@ -1,0 +1,14 @@
+# What Streamlit Community Cloud installs to run apps/dashboards/kpi_app.py.
+#
+# Exactly four libraries, and none of them a provider SDK. The app reads committed JSON and
+# YAML and draws tables — it never calls a model — so `spine`'s own dependencies (litellm,
+# langgraph, langfuse, instructor) are not installed here. `kpi_app.py` puts
+# `packages/spine/src` on the path instead, which imports `spine.kpi` and `spine.eval`
+# without pulling any of them in.
+#
+# Pinned exactly. A dashboard that renders differently on Monday than it did on Friday
+# because a transitive dependency moved is not a dashboard anybody should trust.
+streamlit==1.63.0
+pandas==3.0.5
+pydantic==2.13.5
+PyYAML==6.0.3

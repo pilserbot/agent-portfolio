@@ -46,6 +46,8 @@ __all__ = [
     "KPISpec",
     "KPISpecSet",
     "NoPaybackError",
+    "CostReport",
+    "PurposeUsage",
     "ReplayedCostError",
     "ROIInputs",
     "ROIResult",
@@ -53,6 +55,7 @@ __all__ = [
     "compute_kpis",
     "compute_roi",
     "cost_basis",
+    "cost_report",
     "meets_target",
     "render_markdown",
 ]
@@ -185,6 +188,120 @@ def cost_basis(run: AgentRun, *, include_replayed: bool = False) -> CostBasis:
         billed_calls=len(billed),
         replayed_calls=len(replayed),
         includes_replayed=bool(replayed) and include_replayed,
+    )
+
+
+class PurposeUsage(BaseModel):
+    """What one purpose label consumed across a run's model calls.
+
+    Tokens are always populated. `cost_usd` is None when the run cannot honestly state a
+    cost: tokens count work that was really done, and stay true whether a call was served
+    live or from a cassette, but money does not.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    purpose: str
+    calls: int = Field(ge=0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    cached_tokens: int = Field(ge=0)
+    replayed_calls: int = Field(ge=0)
+    cost_usd: Decimal | None = Field(default=None, description="Cost for this purpose, in usd.")
+
+
+class CostReport(BaseModel):
+    """What a run's calls consumed, and whether their cost may be stated at all.
+
+    The same rule as `cost_basis`, in the shape a display needs: a screen has to render
+    something, so this reports the refusal instead of raising it. `basis` is None exactly
+    when `cost_basis` would have raised, and `refusal` then says why in words meant to be
+    shown to a reader rather than logged.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    basis: CostBasis | None = None
+    refusal: str = Field(default="", description="Why no cost may be shown. Empty if one may.")
+    total_calls: int = Field(ge=0)
+    billed_calls: int = Field(ge=0)
+    replayed_calls: int = Field(ge=0)
+    by_purpose: list[PurposeUsage] = Field(default_factory=list)
+
+    @property
+    def can_state_a_cost(self) -> bool:
+        """Whether this run may show a money figure at all."""
+        return self.basis is not None
+
+    @property
+    def is_measured(self) -> bool:
+        """Whether every call behind the stated cost actually spent the money it reports."""
+        return self.basis is not None and self.basis.is_measured
+
+    @property
+    def total_prompt_tokens(self) -> int:
+        """Prompt tokens across every purpose."""
+        return sum(usage.prompt_tokens for usage in self.by_purpose)
+
+    @property
+    def total_completion_tokens(self) -> int:
+        """Completion tokens across every purpose."""
+        return sum(usage.completion_tokens for usage in self.by_purpose)
+
+
+def cost_report(run: AgentRun, *, include_replayed: bool = False) -> CostReport:
+    """Summarise a run's spend and token use, reporting a refusal rather than raising it.
+
+    `compute_kpis` raises on a replayed run because a KPI is a number and there is no
+    honest one to give. A dashboard has the same rule but a different obligation: it must
+    render, and saying plainly that no cost can be shown is more useful than a blank page.
+    So the refusal becomes a field, and the tokens — which are true either way — are
+    reported regardless.
+    """
+    calls = model_calls(run)
+    replayed = [call for call in calls if not call.was_billed]
+
+    basis: CostBasis | None = None
+    refusal = ""
+    try:
+        basis = cost_basis(run, include_replayed=include_replayed)
+    except ReplayedCostError as error:
+        refusal = str(error)
+
+    usage: dict[str, dict[str, int]] = {}
+    costs: dict[str, Decimal] = {}
+    for call in calls:
+        counters = usage.setdefault(
+            call.purpose,
+            {"calls": 0, "prompt": 0, "completion": 0, "cached": 0, "replayed": 0},
+        )
+        counters["calls"] += 1
+        counters["prompt"] += call.prompt_tokens
+        counters["completion"] += call.completion_tokens
+        counters["cached"] += call.cached_tokens
+        counters["replayed"] += 0 if call.was_billed else 1
+        if call.was_billed or include_replayed:
+            costs[call.purpose] = costs.get(call.purpose, Decimal("0")) + call.cost_usd
+
+    by_purpose = [
+        PurposeUsage(
+            purpose=purpose,
+            calls=counters["calls"],
+            prompt_tokens=counters["prompt"],
+            completion_tokens=counters["completion"],
+            cached_tokens=counters["cached"],
+            replayed_calls=counters["replayed"],
+            cost_usd=costs.get(purpose, Decimal("0")) if basis is not None else None,
+        )
+        for purpose, counters in sorted(usage.items())
+    ]
+    return CostReport(
+        basis=basis,
+        refusal=refusal,
+        total_calls=len(calls),
+        billed_calls=len(calls) - len(replayed),
+        replayed_calls=len(replayed),
+        by_purpose=by_purpose,
     )
 
 
@@ -398,6 +515,28 @@ class KPISpecSet(BaseModel):
         description="Count cassette-served calls in cost figures. Opt in knowingly: the "
         "resulting number is what an earlier live run spent, not what this one did.",
     )
+    headline: list[str] = Field(
+        default_factory=list,
+        description="The metrics a reader should see first, named from `kpis`. Which two "
+        "numbers a project leads with is an editorial decision, so it is declared here "
+        "rather than inferred from the order the metrics happen to be listed in.",
+    )
+
+    def headline_specs(self) -> list[KPISpec]:
+        """The declared headline metrics, in declaration order, or [] if none are named."""
+        by_name = {spec.name: spec for spec in self.kpis}
+        return [by_name[name] for name in self.headline]
+
+    @model_validator(mode="after")
+    def _headline_names_a_declared_metric(self) -> "KPISpecSet":
+        """Refuse a headline naming a metric this project does not report."""
+        known = {spec.name for spec in self.kpis}
+        unknown = [name for name in self.headline if name not in known]
+        if unknown:
+            raise ValueError(
+                f"headline names metric(s) this project does not report: {', '.join(unknown)}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _roi_metrics_need_roi_inputs(self) -> "KPISpecSet":

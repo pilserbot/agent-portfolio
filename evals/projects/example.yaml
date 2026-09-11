@@ -18,6 +18,12 @@ kpis:
   # Left at false regardless: turning it on would say a cassette was involved when none was.
   include_replayed_cost: false
 
+  # The two numbers the dashboard leads with. Which two a project leads with is an
+  # editorial decision, so it is stated here rather than inferred from list order.
+  headline:
+    - extraction_accuracy
+    - cost_per_item_usd
+
   kpis:
     - name: items_evaluated
       unit: count

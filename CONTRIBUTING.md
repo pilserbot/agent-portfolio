@@ -94,8 +94,11 @@ To accept a deliberate change to the numbers, run the evaluation with
 `--update-baseline` and commit the result. Nothing writes a baseline on your behalf: a gate
 that quietly re-accepted whatever it last saw would never fail.
 
-`evals/results/` is git-ignored. A run's numbers matter while you are comparing them; the
-record that survives is the baseline you accepted on purpose.
+`evals/results/` is committed: those files are the history the KPI dashboard
+(`apps/dashboards/kpi_app.py`) draws its trends from, and a dashboard that reads only the
+repository needs them present in a clone. Treat each one as a record rather than scratch
+output — commit the runs that mean something and delete the ones that do not.
+`evals/baseline.json` stays the separate, deliberate statement of what is *accepted*.
 
 ## Before you push
 

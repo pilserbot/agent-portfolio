@@ -15,9 +15,10 @@ model's hands and under test.
 packages/spine/          shared evaluation, model routing and KPI library  (import: spine)
 packages/req_core/       domain-agnostic requirement extraction            (import: req_core)
 apps/ri05_tender/        tender response engine, FastAPI                   (scaffold)
-apps/dashboards/         Streamlit dashboards                              (scaffold)
+apps/dashboards/         Streamlit KPI dashboard, config-driven            (kpi_app.py)
 data/                    seed data and gold sets, committed to the repo
 evals/projects/          one YAML per project: its gold set, its KPIs and its ROI inputs
+evals/results/           one JSON per evaluation run; the dashboard's history
 evals/                   evaluation baselines and reports
 demo/cassettes/          recorded model calls, so a demo runs with no API key
 tests/                   pytest suites; tests/integration/ needs keys or a database
@@ -95,6 +96,24 @@ hide a broken metric.
 Every number in a report is computed by Python from typed structures. A model may have
 produced the answer under test; nothing asks a model whether that answer was right, or what
 it was worth.
+
+## KPI dashboard
+
+```bash
+uv run streamlit run apps/dashboards/kpi_app.py
+```
+
+One page per project, driven entirely by `evals/projects/<project>.yaml` and the result
+files under `evals/results/`. There is no project-specific code in it: adding a project to
+the dashboard is adding a YAML file.
+
+Two of its panels are there to be awkward rather than flattering. **A run whose calls were
+replayed gets no cost figure**, only a banner saying why — the rule from `spine.kpi`, shown
+rather than worked around. And **the ROI assumptions sit on screen beside the ROI**: hours,
+rates, volumes and where the numbers came from, so a reader can disagree with them.
+
+It reads committed files and nothing else, which is what lets it deploy to Streamlit
+Community Cloud from a clone with no secrets — see `apps/dashboards/README.md`.
 
 ## Make targets
 

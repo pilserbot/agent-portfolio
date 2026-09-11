@@ -1,0 +1,148 @@
+{
+  "project": "example",
+  "scope": "full",
+  "sample_size": null,
+  "items_evaluated": 10,
+  "gold_set": "example",
+  "run_id": "example-20260911T155317Z",
+  "measured_at": "2026-09-11T15:53:17.169707Z",
+  "snapshots": [
+    {
+      "project": "example",
+      "metric_name": "items_evaluated",
+      "value": 10.0,
+      "unit": "count",
+      "target": 1.0,
+      "direction": "higher_is_better",
+      "measured_at": "2026-09-11T15:53:17.169707Z",
+      "sample_size": 10,
+      "method": "test"
+    },
+    {
+      "project": "example",
+      "metric_name": "extraction_accuracy",
+      "value": 0.9,
+      "unit": "ratio",
+      "target": 0.85,
+      "direction": "higher_is_better",
+      "measured_at": "2026-09-11T15:53:17.169707Z",
+      "sample_size": 10,
+      "method": "test"
+    },
+    {
+      "project": "example",
+      "metric_name": "requirement_f1",
+      "value": 0.923076923076923,
+      "unit": "ratio",
+      "target": 0.85,
+      "direction": "higher_is_better",
+      "measured_at": "2026-09-11T15:53:17.169707Z",
+      "sample_size": 10,
+      "method": "test"
+    },
+    {
+      "project": "example",
+      "metric_name": "cost_per_item_usd",
+      "value": 0.0,
+      "unit": "usd",
+      "target": 0.05,
+      "direction": "lower_is_better",
+      "measured_at": "2026-09-11T15:53:17.169707Z",
+      "sample_size": 10,
+      "method": "analysis"
+    },
+    {
+      "project": "example",
+      "metric_name": "hours_displaced_per_unit",
+      "value": 6.25,
+      "unit": "hours",
+      "target": 4.0,
+      "direction": "higher_is_better",
+      "measured_at": "2026-09-11T15:53:17.169707Z",
+      "sample_size": 10,
+      "method": "analysis"
+    },
+    {
+      "project": "example",
+      "metric_name": "payback_periods",
+      "value": 4.1558441558441555,
+      "unit": "months",
+      "target": 12.0,
+      "direction": "lower_is_better",
+      "measured_at": "2026-09-11T15:53:17.169707Z",
+      "sample_size": 10,
+      "method": "analysis"
+    }
+  ],
+  "cost": {
+    "basis": {
+      "total_usd": "0",
+      "counted_calls": 0,
+      "billed_calls": 0,
+      "replayed_calls": 0,
+      "includes_replayed": false
+    },
+    "refusal": "",
+    "total_calls": 0,
+    "billed_calls": 0,
+    "replayed_calls": 0,
+    "by_purpose": []
+  },
+  "cost_note": "",
+  "rows": [
+    {
+      "metric": "items_evaluated",
+      "value": 10.0,
+      "unit": "count",
+      "target": 1.0,
+      "direction": "higher_is_better",
+      "method": "test",
+      "passed": true
+    },
+    {
+      "metric": "extraction_accuracy",
+      "value": 0.9,
+      "unit": "ratio",
+      "target": 0.85,
+      "direction": "higher_is_better",
+      "method": "test",
+      "passed": true
+    },
+    {
+      "metric": "requirement_f1",
+      "value": 0.923076923076923,
+      "unit": "ratio",
+      "target": 0.85,
+      "direction": "higher_is_better",
+      "method": "test",
+      "passed": true
+    },
+    {
+      "metric": "cost_per_item_usd",
+      "value": 0.0,
+      "unit": "usd",
+      "target": 0.05,
+      "direction": "lower_is_better",
+      "method": "analysis",
+      "passed": true
+    },
+    {
+      "metric": "hours_displaced_per_unit",
+      "value": 6.25,
+      "unit": "hours",
+      "target": 4.0,
+      "direction": "higher_is_better",
+      "method": "analysis",
+      "passed": true
+    },
+    {
+      "metric": "payback_periods",
+      "value": 4.1558441558441555,
+      "unit": "months",
+      "target": 12.0,
+      "direction": "lower_is_better",
+      "method": "analysis",
+      "passed": true
+    }
+  ]
+}

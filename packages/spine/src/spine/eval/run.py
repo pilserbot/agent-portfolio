@@ -46,7 +46,7 @@ from spine.eval.projects import (
     evaluator_for,
     load_project_config,
 )
-from spine.kpi import KPIError, compute_kpis, meets_target, render_markdown
+from spine.kpi import CostReport, KPIError, compute_kpis, cost_report, meets_target, render_markdown
 
 DEFAULT_BASELINE_PATH = Path("evals/baseline.json")
 DEFAULT_RESULTS_ROOT = Path("evals/results")
@@ -116,6 +116,12 @@ class EvalReport(BaseModel):
     run_id: str
     measured_at: datetime
     snapshots: list[KPISnapshot] = Field(default_factory=list)
+    cost: CostReport = Field(
+        default_factory=lambda: CostReport(total_calls=0, billed_calls=0, replayed_calls=0),
+        description="What the run's model calls consumed, and whether a cost may be stated. "
+        "Recorded even when no cost KPI is declared, so a dashboard can show the spend "
+        "behind a report without re-running it.",
+    )
     cost_note: str = Field(
         default="",
         description="Anything a reader must know before believing the money in this report.",
@@ -205,6 +211,7 @@ def build_report(request: EvalRequest) -> EvalReport:
         run_id=run_id,
         measured_at=measured_at,
         snapshots=list(snapshots),
+        cost=cost_report(outcome.run, include_replayed=config.kpis.include_replayed_cost),
         cost_note=_cost_note(config),
     )
 
