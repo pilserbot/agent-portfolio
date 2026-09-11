@@ -12,6 +12,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=2.0",
     "litellm>=1.60",
     "pydantic>=2.9",
+    "pyyaml>=6.0",
 ]
 
 [build-system]
