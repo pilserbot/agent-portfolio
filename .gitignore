@@ -33,6 +33,10 @@ htmlcov/
 eval_report.md
 eval_report.json
 
+# Per-run evaluation results. The record that is kept deliberately is evals/baseline.json,
+# written by `spine.eval.run --update-baseline`; these are one file per run.
+evals/results/*.json
+
 # Spend ledger written by spine.router
 .spend/
 

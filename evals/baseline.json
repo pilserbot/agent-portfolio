@@ -1,1 +1,34 @@
-{}
+{
+  "metrics": {
+    "items_evaluated": {
+      "value": 10.0,
+      "tolerance": 0.0,
+      "direction": "higher_is_better"
+    },
+    "extraction_accuracy": {
+      "value": 0.9,
+      "tolerance": 0.02,
+      "direction": "higher_is_better"
+    },
+    "requirement_f1": {
+      "value": 0.923076923076923,
+      "tolerance": 0.02,
+      "direction": "higher_is_better"
+    },
+    "cost_per_item_usd": {
+      "value": 0.0,
+      "tolerance": 0.005,
+      "direction": "lower_is_better"
+    },
+    "hours_displaced_per_unit": {
+      "value": 6.25,
+      "tolerance": 0.0,
+      "direction": "higher_is_better"
+    },
+    "payback_periods": {
+      "value": 4.1558441558441555,
+      "tolerance": 0.5,
+      "direction": "lower_is_better"
+    }
+  }
+}

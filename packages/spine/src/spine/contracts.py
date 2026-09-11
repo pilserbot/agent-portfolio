@@ -44,6 +44,12 @@ RunStatus = Literal[
 Direction = Literal["higher_is_better", "lower_is_better"]
 Method = Literal["test", "analysis", "inspection", "demonstration"]
 
+# How a call was served. "live" and "record" both reached a provider and cost real money;
+# "replay" was served from a cassette and cost nothing now, though the cost it carries is
+# what the recorded call cost when it was live. Keeping them apart is what stops a demo
+# from producing a plausible, wrong cost figure — see `spine.kpi.cost_basis`.
+CallMode = Literal["live", "record", "replay"]
+
 
 class ModelCall(BaseModel):
     """One call to a language model, and what it cost."""
@@ -59,6 +65,17 @@ class ModelCall(BaseModel):
     latency_ms: int = Field(ge=0)
     timestamp: datetime
     purpose: str = Field(description='Short label for why the call was made, e.g. "extract".')
+    mode: CallMode = Field(
+        default="live",
+        description="How the call was served. Defaults to 'live' on purpose: a record that "
+        "does not say otherwise is counted as money spent, because under-counting spend is "
+        "the dangerous direction to be wrong in.",
+    )
+
+    @property
+    def was_billed(self) -> bool:
+        """Whether making this call actually spent money."""
+        return self.mode != "replay"
 
 
 class StepTrace(BaseModel):
@@ -93,7 +110,13 @@ class AgentRun(BaseModel):
     @computed_field(description="Sum of every model call's cost_usd across every step, in usd.")
     @property
     def total_cost_usd(self) -> Decimal:
-        """Total cost of the run, summed from the steps rather than stored."""
+        """Total cost of the run, summed from the steps rather than stored.
+
+        This is the raw sum of every call's `cost_usd`, replayed calls included, because
+        the record's job is to carry what the calls say. It is therefore **not** what a
+        cost KPI should be built from: for that, use `spine.kpi.cost_basis`, which knows
+        that a replayed call spent nothing now.
+        """
         return sum(
             (call.cost_usd for step in self.steps for call in step.model_calls),
             Decimal("0"),

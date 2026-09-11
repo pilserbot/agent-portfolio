@@ -23,13 +23,14 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from spine.contracts import ModelCall
+from spine.contracts import CallMode, ModelCall
 
-type ReplayMode = Literal["live", "record", "replay"]
+# The process mode and the mode stamped onto a ModelCall are the same three words, and
+# an alias rather than a second literal so they cannot drift apart.
+type ReplayMode = CallMode
 
 DEFAULT_CASSETTE_ROOT = Path("demo/cassettes")
 FINGERPRINT_LENGTH = 16
