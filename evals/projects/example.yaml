@@ -1,0 +1,110 @@
+# The reference project, so the evaluation harness runs end to end with no key and no
+# network. Its entry point is `spine.eval.example_project`: a keyword rule that classifies
+# a tender clause as binding or not. It gets one of ten items wrong on purpose — an example
+# that scored perfectly would make precision and recall degenerate and hide a broken metric.
+#
+# A real project copies this file's shape, not its numbers.
+project: example
+description: >-
+  Reference project: classify each clause of the example gold set as a requirement or not.
+  Exercises the whole pipeline — config, gold set, entry point, KPIs, report, gate — using
+  deterministic Python and no model at all.
+gold_set: example
+
+kpis:
+  project: example
+
+  # This project makes no model calls, so its costs are honestly zero rather than unknown.
+  # Left at false regardless: turning it on would say a cassette was involved when none was.
+  include_replayed_cost: false
+
+  kpis:
+    - name: items_evaluated
+      unit: count
+      target: 1
+      direction: higher_is_better
+      method: test
+      computation: items_evaluated
+      tolerance: 0
+      description: How many gold items the run actually scored. Zero means nothing ran.
+
+    - name: extraction_accuracy
+      unit: ratio
+      target: 0.85
+      direction: higher_is_better
+      method: test
+      computation: accuracy
+      tolerance: 0.02
+      description: >-
+        Share of clauses classified correctly. The tolerance allows a two-point drift before
+        a change counts as a regression.
+
+    - name: requirement_f1
+      unit: ratio
+      target: 0.85
+      direction: higher_is_better
+      method: test
+      computation: f1
+      positive_label: "yes"
+      tolerance: 0.02
+      description: >-
+        F1 for the binding-clause class. Reported alongside accuracy because the gold set is
+        not balanced, and accuracy alone would flatter a classifier that guessed "yes".
+
+    - name: cost_per_item_usd
+      unit: usd
+      target: 0.05
+      direction: lower_is_better
+      method: analysis
+      computation: cost_per_item_usd
+      tolerance: 0.005
+      description: >-
+        Model spend per gold item. Refuses to produce a figure at all when the run was
+        served from a cassette — see spine.kpi.cost_basis.
+
+    - name: hours_displaced_per_unit
+      unit: hours
+      target: 4.0
+      direction: higher_is_better
+      method: analysis
+      computation: hours_displaced_per_unit
+      tolerance: 0.0
+      description: Human hours the system removes from one unit, under the assumptions below.
+
+    - name: payback_periods
+      unit: months
+      target: 12.0
+      direction: lower_is_better
+      method: analysis
+      computation: payback_periods
+      tolerance: 0.5
+      description: Months of saving needed to recover the implementation cost.
+
+  # Every number below is an input, not a measurement, and `assumptions_source` says so in
+  # the record itself rather than only in this comment — so it survives the file being
+  # copied into a real project and edited. Replace all of them before quoting an ROI to
+  # anybody: `automated_model_cost_per_unit_usd` is the only one a run supplies on its own,
+  # and `compute_kpis` overwrites it with what the run actually cost.
+  roi:
+    unit: tender
+    period_label: month
+    units_per_period: 12
+    implementation_cost_usd: "24000"
+    automated_model_cost_per_unit_usd: "0"
+    assumptions_source: >-
+      Illustrative placeholder for the reference project. Not measured, not sourced from any
+      real engagement, and not to be quoted.
+    baseline_roles:
+      - role: bid_manager
+        hours_per_unit: 6.0
+        hourly_cost_usd: "70"
+      - role: technical_reviewer
+        hours_per_unit: 2.5
+        hourly_cost_usd: "95"
+    residual_roles:
+      - role: bid_manager
+        hours_per_unit: 1.5
+        hourly_cost_usd: "70"
+      - role: technical_reviewer
+        hours_per_unit: 0.75
+        hourly_cost_usd: "95"

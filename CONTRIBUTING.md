@@ -53,10 +53,16 @@ Add the label and re-run the job when a change is likely to move the metrics.
 ## The evaluation report
 
 `python -m spine.eval.run --sample 20 --out eval_report.md --json-out eval_report.json
---project ri05` writes two files: the markdown report at `--out`, and the
-machine-readable one at `--json-out`. If `--json-out` is omitted the JSON goes beside
-`--out` under the same stem, but CI names both paths explicitly. Omit `--sample` to
-evaluate the full gold set.
+--project example` writes three files: the markdown report at `--out`, the
+machine-readable one at `--json-out`, and a timestamped copy under `evals/results/` so a
+run's numbers survive the next run overwriting the report. If `--json-out` is omitted the
+JSON goes beside `--out` under the same stem, but CI names both paths explicitly. Omit
+`--sample` to evaluate the full gold set.
+
+`--project` names a file in `evals/projects/`. That file declares which gold set the
+project is measured on, which KPIs it reports, how far each may drift before it counts as a
+regression, and the named assumptions behind any money it quotes. The project's evaluation
+code is separate, registered by name — see `spine.eval.projects`.
 
 The markdown is posted to the pull request as a **sticky** comment (via
 `marocchino/sticky-pull-request-comment`, keyed on the header `eval-report`), so re-runs
@@ -65,7 +71,12 @@ update the same comment instead of piling up new ones. The JSON sidecar is what
 and exits non-zero when one has regressed beyond its tolerance. The comment is posted
 before the gate runs, so a regression still leaves the report on the pull request.
 
-`evals/baseline.json` is `{}` today, so nothing is compared yet. Its shape is:
+The runner performs the same comparison itself and exits on it, so `spine.eval.gate` is a
+second reading of one implementation rather than a separate opinion — running the gate
+separately matters when the report and the check are separated, such as a report downloaded
+from an earlier job.
+
+`evals/baseline.json` holds the `example` project's accepted numbers. Its shape is:
 
 ```json
 {
@@ -79,8 +90,12 @@ before the gate runs, so a regression still leaves the report on the pull reques
 }
 ```
 
-Both `spine.eval.run` and `spine.eval.gate` are stubs: they establish the CLI contract and
-the file shapes so the CI plumbing works today. The real harness lands later.
+To accept a deliberate change to the numbers, run the evaluation with
+`--update-baseline` and commit the result. Nothing writes a baseline on your behalf: a gate
+that quietly re-accepted whatever it last saw would never fail.
+
+`evals/results/` is git-ignored. A run's numbers matter while you are comparing them; the
+record that survives is the baseline you accepted on purpose.
 
 ## Before you push
 

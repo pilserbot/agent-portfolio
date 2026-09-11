@@ -17,6 +17,7 @@ packages/req_core/       domain-agnostic requirement extraction            (impo
 apps/ri05_tender/        tender response engine, FastAPI                   (scaffold)
 apps/dashboards/         Streamlit dashboards                              (scaffold)
 data/                    seed data and gold sets, committed to the repo
+evals/projects/          one YAML per project: its gold set, its KPIs and its ROI inputs
 evals/                   evaluation baselines and reports
 demo/cassettes/          recorded model calls, so a demo runs with no API key
 tests/                   pytest suites; tests/integration/ needs keys or a database
@@ -64,6 +65,36 @@ python -m spine.replay verify <cassette> # check one is readable, consistent and
 In replay mode the daily spend cap is not enforced, because nothing is spent, and the
 replayed calls stay out of the persisted spend ledger while still appearing in the run's
 own record — so a demo still shows what the work would have cost.
+
+A replayed call is stamped `mode="replay"` in the run record, and `spine.kpi` **refuses to
+state a cost for a run that holds one** unless the project config opts in. Excluding the
+replayed calls would report a demo as costing nothing; including them would report what an
+earlier run spent as though this one had spent it. Both look like measurements, so the
+choice is made in the open or not at all.
+
+## Evaluation
+
+```bash
+python -m spine.eval.run --project example --out eval_report.md --json-out eval_report.json
+python -m spine.eval.run --project example --sample 20 --seed 7 --out eval_report.md
+python -m spine.eval.run --project example --out eval_report.md --update-baseline
+```
+
+The runner loads `evals/projects/<project>.yaml`, loads the gold set it names, calls the
+project's registered evaluation entry point, measures every KPI the config declares, and
+writes three files: the markdown report, its machine-readable sidecar, and a timestamped
+copy under `evals/results/`. It then compares the result against `evals/baseline.json` and
+**exits non-zero if any metric regressed beyond the tolerance the project declared**.
+`--update-baseline` accepts the current numbers as the new reference instead.
+
+The `example` project runs today with no key and no network: it classifies the clauses in
+`data/gold/example.jsonl` with an ordinary keyword rule. It gets one of ten wrong on
+purpose — an example that scored perfectly would make precision and recall degenerate and
+hide a broken metric.
+
+Every number in a report is computed by Python from typed structures. A model may have
+produced the answer under test; nothing asks a model whether that answer was right, or what
+it was worth.
 
 ## Make targets
 
