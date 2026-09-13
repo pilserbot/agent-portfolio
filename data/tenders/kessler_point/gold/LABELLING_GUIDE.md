@@ -1,0 +1,171 @@
+# RI-05 — Gold Set Labelling and Scoring Contract
+
+**Step 4.4 · first pass · 13 September 2026**
+
+The gold set is the answer key. This document says what a label means, how an emitted finding is matched to a label, and how the KPIs are computed from those matches. It is written before any measurement is taken, so the numbers cannot be defined after the fact to suit the result.
+
+---
+
+## 1. What was generated
+
+| | |
+|---|---|
+| Gold items | **187** (186 scored — see `REVIEW_ROUND_1.md`) |
+| Class labels across them | **199** (many items carry two) |
+| Implicit — no "shall" statement anywhere | **72 (38.5%)** |
+| Cold-start detectable — documents alone | **176** |
+| Needing client data for the full finding | **11** |
+| Flagged for close review | **37** (21 reviewed at round 1) |
+
+> **Correction to the ledger's headline.** The ledger reported "199 planted defects". 199 is the number of *class labels*; the number of distinct defects is **187**. The implicit count was reported as 68 (34%) from summing per-document subtotals that omitted secondary tags; counted from the rows it is **72 (38.5%)**. Both figures are corrected in the ledger and the package index. The implicit share went up, not down — but it is now counted rather than asserted.
+
+Files:
+
+| File | What it is |
+|---|---|
+| `gold_set.jsonl` | Machine form, **rev 2** — review round 1 applied. One JSON object per line. This is what the harness loads. Items with `scored: false` are excluded. |
+| `gold_set_rev1.jsonl` | The pre-review first pass, retained for provenance. |
+| `REVIEW_ROUND_1.md` | What the reviewer changed and why. |
+| `gold_set.yaml` | The same records, readable and editable. |
+| `GOLD_SET_REVIEW_rev2.xlsx` | Review workbook — now carries each item's review status and a fresh verdict column for round 2. |
+| `LABELLING_GUIDE.md` | This document. |
+
+---
+
+## 2. The record
+
+```yaml
+id: D4-29
+document: 4
+refs: [TS-B.13, TS-B.25]
+classes: [COMPUTED, ENG-CONFLICT]
+finding_type: computed_compliance
+severity: critical
+tier: cold_start
+requires: [product catalogue attributes]
+evidence_basis: arithmetic
+statement: "The specified lens cannot meet the specified pixel density…"
+expected_action: "…clarification question; both resolutions priced"
+expects_clarification_question: true
+expects_price_impact: true
+demo_set: true
+review_priority: high
+```
+
+**`id`, `document`, `refs`, `classes`, `statement`, `expected_action`** are transcribed from the ledger. Everything else is **inferred by rule** and is what the review is for.
+
+### The inferred fields
+
+**`severity`** — `no_bid` › `critical` › `major` › `minor`. Assigned from the primary class, then raised to `critical` for the demo set and to `no_bid` for the three General Conditions triggers. This is the only label that moves the published KPI, because recall is weighted by it. **Round 1 fixed the meaning of the top of the ladder:** `critical` is what you cannot ask your way out of; `major` is what a clarification question can resolve.
+
+**`tier`** — `cold_start` means findable from the thirteen documents with no client data loaded; `configured` means it cannot be found at all without it. An item is `cold_start` if **any** of its classes is; `requires` then names what the *complete* finding still needs. D10-02 is the worked example: that a −40 °C camera is specified at a site whose minimum is −5 °C is a cross-document conflict findable cold; that removing the heater saves money needs the price book.
+
+**`evidence_basis`** — where the proof lives: `single_clause`, `cross_clause`, `cross_document`, `arithmetic`, each optionally `+domain_knowledge` where the text alone is insufficient and the model must know something about the world. This field is what separates "retrieval found it" from "reasoning found it", and it is the axis the portfolio argument rests on.
+
+**`expects_*`** — what the pipeline must actually **emit** for the item to count as found. A finding that identifies the defect but produces no clarification question does not satisfy an item whose `expects_clarification_question` is true. Detection without the right output is not a result.
+
+---
+
+## 3. Matching rule
+
+An emitted finding `F` matches gold item `G` when **both** hold:
+
+1. **Anchor** — `F.refs ∩ G.refs ≠ ∅` after normalisation (case, hyphen, whitespace).
+2. **Type** — `F.finding_type` is in `G`'s allowed set: the mapping of every class on `G`, not only the primary.
+
+Outcomes:
+
+| Outcome | Definition | Counts as |
+|---|---|---|
+| **Match** | Anchor and type both hold | Found |
+| **Partial** | Anchor holds, type does not | Reported separately; **not** counted as found |
+| **Output miss** | Match holds but a required `expects_*` output is absent | **Not** counted as found; reported as its own class |
+| **Unmatched finding** | `F` matches no gold item | → adjudication queue |
+| **Miss** | `G` matched by nothing | Missed |
+
+Matching is deterministic Python. No model decides whether a finding counts.
+
+### Unmatched findings are not automatically false positives
+
+The ledger is a record of what was **planted**, not a census of every defect in the package. A thirteen-document synthetic tender contains accidental ambiguities nobody wrote on purpose. An unmatched finding therefore goes to an **adjudication queue** for a human verdict — `true_new` (a real defect, promoted into the gold set with a `U-` id) or `false_positive`.
+
+Precision is reported two ways, always both:
+
+```
+precision_strict   = matches / (matches + unmatched)          # every unmatched finding penalised
+precision_adjudicated = (matches + true_new) / all findings   # after human verdict
+```
+
+Publishing only the second would be self-serving. Publishing only the first understates a system that finds real things. The gap between them is itself informative, so both are on the dashboard.
+
+---
+
+## 4. The KPIs this gold set supports
+
+```
+recall_overall          = matched / 186        # scored items only
+recall_weighted         = Σ w(severity) · matched / Σ w(severity)      w = {no_bid 8, critical 4, major 2, minor 1}
+recall_by_class         = per the 19 classes
+recall_cold_start       = matched / 176        # the number that generalises to a new client
+recall_configured       = matched / 11
+implicit_recovery       = matched IMPLICIT / 72
+implicit_uplift         = implicit_recovery − keyword_baseline
+no_bid_detection        = matched no_bid / 3   # must be 3/3 or the run fails the gate
+time_to_first_finding   = wall-clock seconds
+cost_per_run            = from the router's cost ledger, not from Langfuse
+```
+
+**`keyword_baseline` is 0 by construction.** A search for "shall" across all thirteen documents returns none of the 72 implicit items, because none of them is written as a "shall" statement. That baseline is measured in the same CI job, not asserted — a one-line grep whose result is recorded alongside the model's.
+
+**The no-bid gate is a hard gate.** A run that misses any of D3-01, D3-02, D3-03 fails, whatever the other numbers say. A system that reads a contract and does not notice unlimited liability has no business quoting its recall.
+
+---
+
+## 5. Leakage guard
+
+The gold set and the ledger live outside the pipeline's import graph, and a test enforces it:
+
+- No module under `apps/ri05_tender/pipeline/**` may import from or open any path under `gold/` or any file named `DEFECT_LEDGER*`.
+- The eval harness reads the gold set **after** the pipeline run has returned, never before.
+- The test fails the build, not the run.
+
+Without this the recall figure means nothing, and there is no way to prove it after the fact.
+
+---
+
+## 6. The production path — a real tender, no ledger
+
+The gold set exists only for measurement. On a real tender the pipeline receives documents and nothing else, and its intake stage does four things before any requirement is extracted:
+
+1. **Reconcile the package against its own document list.** Find the clause that enumerates the tender documents (the equivalent of ITB-4.1) and compare it to what was actually received. Every listed document not present is a gap with a name.
+
+2. **Reconcile the submission requirements against the same list.** Find the clause enumerating what the bidder must return (the equivalent of ITB-9.3 Packages A/B/C) and build the submission checklist from it. Where that clause is absent, that absence is itself recorded — the checklist is then reconstructed from scattered obligations and marked `derived`, not `stated`.
+
+3. **Resolve every cross-reference.** Any document, drawing, standard or annex cited in the received text and not present becomes a **dangling reference**, carrying with it the list of requirements that depend on it. The demo already contains this case: the drawings are not in the package, yet TS-B.25 — the hardest requirement in the tender — is demonstrated against detection-zone extents that exist only on SEC-201 and SEC-202.
+
+4. **Draft the bidder question for each gap.** Not a generic "please provide missing documents", but a specific, deadline-aware question naming the document and the requirements blocked by it:
+
+   > *TS-B.25 requires ≥ 80 px/m at the far edge of the detection zone. Drawing note GN-09 defines those extents on SEC-201 and SEC-202, which were not included in the package. Please issue SEC-201 and SEC-202, or state the design range against which pixel density is to be demonstrated.*
+
+Each question carries the requirement IDs it unblocks, the question deadline it must be filed by, and — where the tender has an ITB-6.5-equivalent deeming clause — the note that an unasked question becomes a priced obligation.
+
+**Coverage confidence** is reported on the analysis as a whole: how many requirements are fully evidenced, how many rest on a document that was never received, and which conclusions are therefore provisional. The presale engineer sees what is solid and what is waiting on an answer, rather than a clean-looking report built on a hole.
+
+Where a list exists, it is used. Where it does not, its absence is a finding. Nothing is silently assumed complete.
+
+---
+
+## 7. What the review needs from you
+
+The 37 high-priority rows, in this order:
+
+1. **The severity ladder** — 3 `no_bid`, 21 `critical`. Any grade you disagree with changes a published number.
+2. **The 11 `configured` items** — is `requires` right about what data each actually needs? These set the honest boundary of the cold-start claim.
+3. **The 12 `+domain_knowledge` items** — do these genuinely need world knowledge, or is the text sufficient? This is the axis the whole argument stands on, so it should be conservative.
+4. **The 9 demo-set items** — the ones that get shown. Every label on these is load-bearing.
+
+The remaining 150 are mostly implicit recoveries from the Bill of Quantities, the drawing register and the annexes, all graded `minor` and all cold-start. Spot-check fifteen and accept the rest.
+
+---
+
+*Next: step 4.5 — wire the eval harness to `gold_set.jsonl`, add the leakage guard test, and record the keyword baseline in CI.*
