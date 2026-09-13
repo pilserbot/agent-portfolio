@@ -14,8 +14,9 @@ model's hands and under test.
 ```
 packages/spine/          shared evaluation, model routing and KPI library  (import: spine)
 packages/req_core/       domain-agnostic requirement extraction            (import: req_core)
-apps/ri05_tender/        tender response engine, FastAPI                   (scaffold)
+apps/ri05_tender/        tender response engine; tender loading layer      (ri05_tender.tender)
 apps/dashboards/         Streamlit KPI dashboard, config-driven            (kpi_app.py)
+data/tenders/<name>/     one folder per tender: documents/ and an optional gold/
 data/                    seed data and gold sets, committed to the repo
 evals/projects/          one YAML per project: its gold set, its KPIs and its ROI inputs
 evals/results/           one JSON per evaluation run; the dashboard's history
@@ -96,6 +97,21 @@ hide a broken metric.
 Every number in a report is computed by Python from typed structures. A model may have
 produced the answer under test; nothing asks a model whether that answer was right, or what
 it was worth.
+
+## Loading a tender
+
+```bash
+python -m ri05_tender.tender.loader data/tenders/<folder>
+```
+
+A tender is a folder: `documents/` as the client issued it, and optionally `gold/` for one
+that has been labelled. `load_tender(folder)` is how any tender enters the system, and
+**no tender's name appears anywhere in the code** — pointing the loader at a new folder is
+the whole setup. A folder with no `gold/` loads identically, which is the production path.
+
+PDF pages keep their real page numbers so a citation can name a page that exists;
+worksheets keep their row numbers so a "BOQ row 214" still resolves. See
+`apps/ri05_tender/README.md`.
 
 ## KPI dashboard
 
