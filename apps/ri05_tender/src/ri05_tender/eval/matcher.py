@@ -8,8 +8,8 @@ A finding matches a gold item when **both** hold:
    *not* remove hyphens: ``TS-B.2`` and ``TSB.2`` stay different references, because
    collapsing that distinction would manufacture matches between neighbouring clauses.
 2. **type** — the finding's type is in the set derived from **all** of the item's classes.
-   All of them: an item classed ``["IMPLICIT", "COMMERCIAL"]`` is answerable either way, and
-   reading only the first would mark a correct finding wrong.
+   All of them: an item classed ``["DISPLACED", "COMMERCIAL"]`` is answerable either way,
+   and reading only the first would mark a correct finding wrong.
 
 Six outcomes, and only the first counts as found:
 
@@ -55,10 +55,32 @@ published number needs a definition, and a definition anyone can re-derive by ha
 stated order is worth more here than a figure that is optimal but whose value depends on
 which solver ran.
 
+**A recovered statement must be the finding's own words.** An item whose
+``expects_recovered_statement`` is true — every ``UNSTATED`` and ``DISPLACED`` item — is
+satisfied only when the finding carries a non-empty ``recovered_statement`` **and** that
+text, whitespace-collapsed and casefolded, is not a verbatim span of any page of the tender.
+A finding that merely quotes the line it found scores ``OUTPUT_MISS``: it has pointed at
+text, which is retrieval, and the item asks for the obligation stated, which is not.
+
+This is what makes "a keyword baseline cannot recover an obligation" true by enforcement
+rather than by assertion — the previous claim was asserted and was false. The gold set said
+none of its 72 implicit items was written as a "shall" statement anywhere in the package; a
+"shall" grep then recovered 27.8% of them, because 40 of the 72 are plain "shall" clauses
+displaced into drawing notes, annexes and federal-provisions text. That is the split those
+two classes now record, and this rule is what stops a rule that can only quote from being
+credited with recovery again.
+
+Testing containment needs the tender text, so `match_findings` takes a `SourceText`. It is
+optional only for a gold set where no item asks for a recovery; where one does and no source
+was given, the matcher raises rather than skipping the check, because a silently skipped
+check is how the false claim survived the first time.
+
 Deliberately does not: call a model. Nothing in this module asks anything to judge
-similarity — matching is set intersection and dictionary lookup, and that is what makes a
-score reproducible. It also does not decide whether an unmatched finding is wrong; that is
-a human's call, recorded in `adjudication`.
+similarity — matching is set intersection, dictionary lookup and a substring test, and that
+is what makes a score reproducible. In particular, whether a recovered statement is a *good*
+paraphrase is not judged here: the rule is that it is not a copy, which is checkable. It
+also does not decide whether an unmatched finding is wrong; that is a human's call, recorded
+in `adjudication`.
 
 """
 
@@ -69,6 +91,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ri05_tender.eval.models import Finding, GoldItem
+from ri05_tender.tender.models import TenderPackage
 
 # Each defect class the gold set uses, and the finding type that answers it. A class with no
 # entry here stops the run: findings for it could never match, so every item carrying it
@@ -76,7 +99,11 @@ from ri05_tender.eval.models import Finding, GoldItem
 # failing system rather than a broken harness.
 CLASS_TO_FINDING_TYPE: dict[str, str] = {
     "COMPOUND": "atomicity_split",
-    "IMPLICIT": "implicit_requirement",
+    # IMPLICIT was here until rev 3, doing two jobs at once. See CORRECTION_implicit_class.md
+    # beside the gold set: an obligation nobody wrote down and an obligation written down
+    # somewhere nobody reads are different problems, and one class could not measure either.
+    "UNSTATED": "unstated_requirement",
+    "DISPLACED": "displaced_requirement",
     "MODALITY": "modality_inconsistency",
     "CONFLICT": "internal_conflict",
     "ENG-CONFLICT": "engineering_conflict",
@@ -96,7 +123,17 @@ CLASS_TO_FINDING_TYPE: dict[str, str] = {
     "BUDGET": "budget_variance",
 }
 
-IMPLICIT_CLASS = "IMPLICIT"
+# The two halves of the old IMPLICIT class. UNSTATED: no requirement sentence for it exists
+# anywhere in the package — it lives in a Bill of Quantities line, a Pricing Schedule row, or
+# a scope word buried in prose. DISPLACED: it is written out as a plain "shall" clause, but
+# in a drawing note, an annex or a federal-provisions clause where a requirements review
+# never goes. Recovery over the two is reported separately and never summed: a rule that can
+# read is enough for one of them and cannot touch the other.
+UNSTATED_CLASS = "UNSTATED"
+DISPLACED_CLASS = "DISPLACED"
+
+# The output name a gold item's `expects_recovered_statement` demands.
+RECOVERED_STATEMENT = "recovered_statement"
 
 Outcome = Literal["match", "output_miss", "partial", "duplicate", "unmatched", "miss"]
 
@@ -112,19 +149,25 @@ _HYPHEN_RUN = re.compile(r"-{2,}")
 
 __all__ = [
     "CLASS_TO_FINDING_TYPE",
-    "IMPLICIT_CLASS",
+    "DISPLACED_CLASS",
     "OUTCOME_RANK",
+    "RECOVERED_STATEMENT",
+    "UNSTATED_CLASS",
     "Assignment",
     "Duplicate",
     "MatchReport",
     "MatcherError",
     "Outcome",
     "Partial",
+    "SourceText",
     "allowed_finding_types",
     "anchor_overlap",
+    "flatten",
     "match_findings",
     "normalise_ref",
     "normalise_refs",
+    "recovers_statement",
+    "source_text",
 ]
 
 
@@ -170,9 +213,69 @@ def anchor_overlap(finding: Finding, item: GoldItem) -> int:
     return len(normalise_refs(finding.refs) & normalise_refs(item.refs))
 
 
-def missing_outputs(finding: Finding, item: GoldItem) -> list[str]:
-    """The outputs this item required that the finding did not carry, in a stable order."""
+def flatten(text: str) -> str:
+    """Put text into the one form the containment test compares in.
+
+    Whitespace collapsed to single spaces and the whole thing casefolded, so a claimed
+    recovery cannot escape the test by re-wrapping a line or changing its capitalisation.
+    Nothing else is touched: removing punctuation or stemming would start deciding how
+    close a paraphrase has to be, which is a judgement this module does not make.
+    """
+    return _WHITESPACE.sub(" ", text).strip().casefold()
+
+
+class SourceText(BaseModel):
+    """Every page of a tender, flattened once, so a claimed recovery can be tested against it.
+
+    Built from the same `TenderPackage` the pipeline read. Testing against anything else —
+    a re-extraction, a subset, the markdown originals — would let a finding count as its own
+    words merely because the copy it quoted was not the copy being searched.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    tender_name: str
+    pages: tuple[str, ...] = Field(
+        default=(), description="Page text, already flattened by `flatten`."
+    )
+
+    def quotes(self, text: str) -> bool:
+        """Whether this text appears verbatim on some page, once both are flattened."""
+        flattened = flatten(text)
+        return any(flattened in page for page in self.pages)
+
+
+def source_text(package: TenderPackage) -> SourceText:
+    """The tender's pages in the form the recovery test needs."""
+    return SourceText(
+        tender_name=package.name,
+        pages=tuple(
+            flatten(page.text) for document in package.documents for page in document.pages
+        ),
+    )
+
+
+def recovers_statement(finding: Finding, source: SourceText) -> bool:
+    """Whether this finding stated an obligation in its own words rather than quoting it.
+
+    Two conditions, both necessary: the field is non-empty, and its flattened text is not a
+    span of any page. Quoting the source is the thing a keyword rule can do, so crediting it
+    would make the recovery figure measure retrieval.
+    """
+    if finding.recovered_statement is None or not finding.recovered_statement.strip():
+        return False
+    return not source.quotes(finding.recovered_statement)
+
+
+def missing_outputs(finding: Finding, item: GoldItem, source: SourceText | None) -> list[str]:
+    """The outputs this item required that the finding did not carry, in a stable order.
+
+    `source` may be None only when the item does not ask for a recovered statement;
+    `match_findings` refuses the combination before anything reaches here.
+    """
     carried = finding.outputs.present()
+    if source is not None and recovers_statement(finding, source):
+        carried.add(RECOVERED_STATEMENT)
     return [name for name in item.expected_outputs if name not in carried]
 
 
@@ -256,12 +359,23 @@ class MatchReport(BaseModel):
         )
 
 
-def match_findings(findings: Sequence[Finding], gold: Sequence[GoldItem]) -> MatchReport:
+def match_findings(
+    findings: Sequence[Finding],
+    gold: Sequence[GoldItem],
+    *,
+    source: SourceText | None = None,
+) -> MatchReport:
     """Assign findings to gold items one-to-one and place everything left over.
 
     Only scored items should be passed in: this module counts what it is given, and the
     decision to exclude an item belongs to the caller that loaded it.
+
+    `source` is the tender the findings were made against, and is required as soon as any
+    item asks for a recovered statement. Omitting it then raises rather than waving the
+    check through: the claim this check exists to make honest was false for a year because
+    nothing measured it.
     """
+    _require_source_for_recovery(gold, source)
     allowed = {item.id: allowed_finding_types(item) for item in gold}
     by_id = {item.id: item for item in gold}
 
@@ -275,7 +389,7 @@ def match_findings(findings: Sequence[Finding], gold: Sequence[GoldItem]) -> Mat
             anchored.setdefault(finding.finding_id, []).append(item.id)
             if finding.finding_type not in allowed[item.id]:
                 continue
-            absent = missing_outputs(finding, item)
+            absent = missing_outputs(finding, item, source)
             candidates.append(
                 Assignment(
                     finding_id=finding.finding_id,
@@ -332,6 +446,22 @@ def match_findings(findings: Sequence[Finding], gold: Sequence[GoldItem]) -> Mat
         unmatched=unmatched,
         misses=sorted(gold_id for gold_id in by_id if gold_id not in taken_gold),
     )
+
+
+def _require_source_for_recovery(gold: Sequence[GoldItem], source: SourceText | None) -> None:
+    """Refuse to score items that ask for a recovered statement without the text to test it."""
+    if source is not None:
+        return
+    expecting = sorted(item.id for item in gold if item.expects_recovered_statement)
+    if expecting:
+        raise MatcherError(
+            f"{len(expecting)} gold item(s) require a recovered statement "
+            f"({', '.join(expecting[:5])}{'...' if len(expecting) > 5 else ''}) and no "
+            f"SourceText was given, so there is nothing to test a claimed recovery against. "
+            f"Pass source=source_text(package). Scoring them without it would credit a "
+            f"finding that quoted the tender back, which is exactly the error this check "
+            f"was added to stop."
+        )
 
 
 def _rank(candidate: Assignment) -> tuple[int, int, float, str, str]:
