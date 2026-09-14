@@ -17,3 +17,11 @@ separate, deliberate statement of what is currently *accepted*, written only by
 
 CI also uploads each report as a build artifact, which is the copy to reach for when a run
 failed and you want to see why.
+
+## Baselines
+
+`<tender>_keyword_baseline.json` is different: not a run of the system, but a measurement of
+the floor a claim about the system has to clear. It carries no timestamp, because there is
+one keyword baseline per tender and a new measurement replaces it — an uplift figure should
+always divide by the current floor, not by whichever old file somebody reached for. The
+`test` CI job recomputes it on every push and fails if a measured figure moved.
