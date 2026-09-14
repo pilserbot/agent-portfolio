@@ -657,3 +657,32 @@ def test_the_pinned_requirements_match_what_is_installed() -> None:
         "pydantic": pydantic.VERSION,
         "PyYAML": pyyaml.__version__,
     }
+
+
+def test_an_unset_target_is_shown_as_the_word_not_a_number(tmp_path: Path) -> None:
+    # A dash or a zero would read as a target of zero. "UNSET" cannot be misread.
+    module = load_kpi_app()
+    source = yaml.safe_load((PROJECT_ROOT / "example.yaml").read_text(encoding="utf-8"))
+    for spec in source["kpis"]["kpis"]:
+        spec["target"] = None
+    (tmp_path / "example.yaml").write_text(yaml.safe_dump(source), encoding="utf-8")
+    config = load_project_config("example", root=tmp_path)
+
+    rendered = [module._declared_target(spec) for spec in config.kpis.kpis]
+
+    assert set(rendered) == {"UNSET"}
+
+
+def test_the_ri05_project_declares_every_target_unset() -> None:
+    # The pipeline does not exist yet, so there is nothing to set a target against.
+    config = load_project_config("ri05", root=PROJECT_ROOT)
+
+    assert [spec.name for spec in config.kpis.kpis][:2] == ["recall_overall", "recall_weighted"]
+    assert all(spec.target is None for spec in config.kpis.kpis)
+    assert config.kpis.roi is None  # no invented rates
+
+
+def test_every_committed_project_config_loads() -> None:
+    # The dashboard lists whatever is in the directory, so a broken one breaks the page.
+    for project in available_projects(PROJECT_ROOT):
+        assert load_project_config(project, root=PROJECT_ROOT).project == project

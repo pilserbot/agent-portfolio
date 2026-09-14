@@ -21,3 +21,9 @@ reviewer can read it without reading Python.
 
 `example.yaml` is the reference. Copy its shape; do not copy its ROI numbers, which are
 labelled in the file itself as illustrative placeholders.
+
+`ri05.yaml` is the other shape worth reading: a project that declares its instrument and
+**sets no targets at all**. Every `target:` is `null`, which `spine.kpi.KPISpec` reads as
+UNSET, and `compute_kpis` refuses to measure a metric with no target rather than inventing
+one. A project with nothing measured yet says so; a number written down before there is
+evidence for it is worse than a blank.

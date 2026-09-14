@@ -52,7 +52,7 @@ from dashboards.kpi_data import (  # noqa: E402 - must follow the sys.path setup
 )
 from spine.eval.projects import DEFAULT_PROJECT_ROOT  # noqa: E402 - as above
 from spine.eval.run import DEFAULT_RESULTS_ROOT  # noqa: E402 - as above
-from spine.kpi import CostReport, ROIInputs, ROIResult  # noqa: E402 - as above
+from spine.kpi import CostReport, KPISpec, ROIInputs, ROIResult  # noqa: E402 - as above
 
 PROJECT_ROOT = REPO_ROOT / DEFAULT_PROJECT_ROOT
 RESULTS_ROOT = REPO_ROOT / DEFAULT_RESULTS_ROOT
@@ -61,6 +61,17 @@ RESULTS_ROOT = REPO_ROOT / DEFAULT_RESULTS_ROOT
 def _comparator(direction: str) -> str:
     """The sign that shows which way a target is good."""
     return "≥" if direction == "higher_is_better" else "≤"
+
+
+def _declared_target(spec: KPISpec) -> str:
+    """A declared target, or the word for one nobody has decided yet.
+
+    "UNSET" rather than a dash: a reader must be able to tell a target of zero from an
+    absent one, and a project that has not chosen its numbers should say so out loud.
+    """
+    if spec.target is None:
+        return "UNSET"
+    return f"{_comparator(spec.direction)} {spec.target:g}"
 
 
 def render_headlines(view: ProjectView) -> None:
@@ -322,7 +333,7 @@ def render_project(view: ProjectView) -> None:
                 [
                     {
                         "Metric": spec.name,
-                        "Target": f"{_comparator(spec.direction)} {spec.target:g}",
+                        "Target": _declared_target(spec),
                         "Unit": spec.unit,
                         "Method": spec.method,
                     }
