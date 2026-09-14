@@ -8,7 +8,10 @@ dependencies = [
     "spine",
     "req-core",
     "fastapi>=0.115",
+    "openpyxl>=3.1",
+    "pdfplumber>=0.11",
     "pydantic>=2.9",
+    "python-docx>=1.2",   # iter_inner_content(), used by the DOCX reader
     "uvicorn>=0.32",
 ]
 
