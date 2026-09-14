@@ -4,8 +4,8 @@ The order is deliberate. The header states how many items were scored **and how 
 excluded**, because a denominator that shrank without anyone saying so is the easiest way
 for a score to improve while the system does not. Then the headline figures, then recall
 broken out three ways, then the no-bid gate on a line of its own, then the outcomes that
-are neither a find nor a clean miss: PARTIAL, OUTPUT_MISS, and the findings still waiting
-on a human.
+are neither a find nor a clean miss: PARTIAL, OUTPUT_MISS, DUPLICATE, and the findings
+still waiting on a human.
 
 The gate gets its own line and the word PASS or FAIL because it is not a rate and must not
 be read as one. Everything else on the page can be traded off; that cannot.
@@ -112,6 +112,12 @@ def render_markdown(result: ScoreCard) -> str:
                     "PARTIAL",
                     str(result.partials),
                     "right clause, wrong kind of finding — not counted as found",
+                ),
+                (
+                    "DUPLICATE",
+                    str(result.duplicates),
+                    "restates a defect another finding already answered — counts against "
+                    "strict precision, never adjudicated",
                 ),
                 ("MISS", str(result.misses), "no finding was credited with it"),
                 (

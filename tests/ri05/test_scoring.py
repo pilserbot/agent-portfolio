@@ -27,6 +27,7 @@ from ri05_tender.eval.adjudication import (
 from ri05_tender.eval.loader import GoldSetError, NoGoldSetError, load_gold, load_gold_file
 from ri05_tender.eval.matcher import (
     CLASS_TO_FINDING_TYPE,
+    OUTCOME_RANK,
     MatcherError,
     allowed_finding_types,
     match_findings,
@@ -310,6 +311,7 @@ def test_every_finding_lands_in_exactly_one_outcome() -> None:
         {a.finding_id for a in report.matches}
         | {a.finding_id for a in report.output_misses}
         | {partial.finding_id for partial in report.partials}
+        | {duplicate.finding_id for duplicate in report.duplicates}
         | set(report.unmatched)
     )
 
@@ -318,8 +320,42 @@ def test_every_finding_lands_in_exactly_one_outcome() -> None:
         len(report.matches)
         + len(report.output_misses)
         + len(report.partials)
+        + len(report.duplicates)
         + len(report.unmatched)
     ) == len(findings)
+
+
+def test_the_finding_partition_holds_with_every_outcome_present_at_once() -> None:
+    # One of each: MATCH, OUTPUT_MISS, PARTIAL, DUPLICATE, UNMATCHED.
+    gold = [
+        a_gold_item("G1", refs=["A-1"]),
+        a_gold_item("G2", refs=["A-2"], expects_clarification_question=True),
+        a_gold_item("G3", refs=["A-3"], classes=["PROCESS"], finding_type="submission_constraint"),
+    ]
+    findings = [
+        a_finding("F1", refs=["A-1"], confidence=0.9),  # MATCH on G1
+        a_finding("F2", refs=["A-2"]),  # OUTPUT_MISS on G2
+        a_finding("F3", refs=["A-3"]),  # PARTIAL: anchors G3, wrong type
+        a_finding("F4", refs=["A-1"], confidence=0.1),  # DUPLICATE of G1
+        a_finding("F5", refs=["Z-9"]),  # UNMATCHED
+    ]
+
+    report = match_findings(findings, gold)
+
+    assert [a.finding_id for a in report.matches] == ["F1"]
+    assert [a.finding_id for a in report.output_misses] == ["F2"]
+    assert [p.finding_id for p in report.partials] == ["F3"]
+    assert [d.finding_id for d in report.duplicates] == ["F4"]
+    assert report.unmatched == ["F5"]
+    assert (
+        len(report.matches)
+        + len(report.output_misses)
+        + len(report.partials)
+        + len(report.duplicates)
+        + len(report.unmatched)
+    ) == len(findings)
+    # And the gold side still partitions independently of it.
+    assert len(report.matches) + len(report.output_misses) + len(report.misses) == len(gold)
 
 
 def test_supplying_the_required_output_turns_the_output_miss_into_a_match() -> None:
@@ -418,8 +454,11 @@ def test_two_findings_cannot_both_be_credited_with_one_gold_item() -> None:
 
     assert len(report.matches) == 1
     assert report.matches[0].finding_id == "F2"  # higher confidence wins
-    # The loser anchored a gold item, so it is a PARTIAL rather than an UNMATCHED finding.
-    assert [partial.finding_id for partial in report.partials] == ["F1"]
+    # The loser anchored and typed onto an item somebody else now holds: a DUPLICATE. It
+    # restates a known defect rather than proposing a new one, so no human is asked.
+    assert [duplicate.finding_id for duplicate in report.duplicates] == ["F1"]
+    assert report.partials == []
+    assert report.unmatched == []
 
 
 def test_the_higher_anchor_overlap_wins_before_confidence() -> None:
@@ -453,14 +492,13 @@ def test_identical_input_always_produces_an_identical_assignment() -> None:
     assert first == second
 
 
-def test_the_tiebreak_can_prefer_an_output_miss_over_a_match() -> None:
-    """Pins a consequence of the specified tiebreak, so a change to it is visible.
+def test_completeness_outranks_overlap() -> None:
+    """The whole point of the ordering: a complete answer takes the item.
 
-    The rule is overlap, then confidence, then finding id — it says nothing about
-    preferring a complete answer. So a finding that anchors more references but omits a
-    required output takes the item, and the finding that fully answered it is left over as
-    a PARTIAL. Implemented as specified rather than quietly improved; if the intended rule
-    is "prefer a MATCH first", this test is where that change lands.
+    F1 anchors both references but omits the required output; F2 anchors one and supplies
+    it. Under overlap-first, F1 would take G1 as an OUTPUT_MISS and the item would read as
+    not found — the system answered correctly and would be scored as having failed. That is
+    a defect in the instrument, not in the system under test.
     """
     gold = [a_gold_item("G1", refs=["A-1", "A-2"], expects_clarification_question=True)]
     findings = [
@@ -470,9 +508,154 @@ def test_the_tiebreak_can_prefer_an_output_miss_over_a_match() -> None:
 
     report = match_findings(findings, gold)
 
+    assert [(a.finding_id, a.gold_id) for a in report.matches] == [("F2", "G1")]
+    assert report.output_misses == []
+    assert report.misses == []
+    # F1 anchored and typed onto an item somebody else now holds: a DUPLICATE, not a
+    # candidate new defect, so it is not sent to a human.
+    assert [duplicate.finding_id for duplicate in report.duplicates] == ["F1"]
+    assert report.unmatched == []
+
+
+def test_the_old_pathology_no_longer_occurs_even_at_higher_confidence() -> None:
+    # Same shape, with the incomplete finding also more confident. Completeness still wins:
+    # it is rank 1 of the order, ahead of both overlap and confidence.
+    gold = [a_gold_item("G1", refs=["A-1", "A-2"], expects_price_impact=True)]
+    findings = [
+        a_finding("F1", refs=["A-1", "A-2"], confidence=0.99),
+        a_finding("F2", refs=["A-1"], confidence=0.10, price_impact_usd=4200.0),
+    ]
+
+    report = match_findings(findings, gold)
+
+    assert [a.finding_id for a in report.matches] == ["F2"]
+    assert scored_run(gold, findings).recall_overall == 1.0
+
+
+def test_the_outcome_rank_is_completeness_first() -> None:
+    # The order is data, so it can be read rather than inferred from behaviour.
+    assert OUTCOME_RANK["match"] < OUTCOME_RANK["output_miss"] < OUTCOME_RANK["partial"]
+
+
+def test_an_output_miss_still_wins_when_no_complete_answer_competes() -> None:
+    # Completeness first does not mean an incomplete answer is discarded; it means it loses
+    # only to a complete one.
+    gold = [a_gold_item("G1", refs=["A-1"], expects_clarification_question=True)]
+    findings = [a_finding("F1", refs=["A-1"], confidence=0.3)]
+
+    report = match_findings(findings, gold)
+
     assert [a.finding_id for a in report.output_misses] == ["F1"]
-    assert report.matches == []
-    assert [partial.finding_id for partial in report.partials] == ["F2"]
+    assert report.duplicates == []
+
+
+def test_overlap_still_decides_between_two_equally_complete_answers() -> None:
+    # Rank 2 of the order still does its job once rank 1 ties.
+    gold = [a_gold_item("G1", refs=["A-1", "A-2"])]
+    findings = [
+        a_finding("F1", refs=["A-1"], confidence=0.99),
+        a_finding("F2", refs=["A-1", "A-2"], confidence=0.10),
+    ]
+
+    assert [a.finding_id for a in match_findings(findings, gold).matches] == ["F2"]
+
+
+# --- DUPLICATE --------------------------------------------------------------------
+
+
+def test_a_second_finding_on_a_claimed_item_is_a_duplicate_not_unmatched() -> None:
+    # It demonstrably refers to a known defect, so it is not a candidate new one.
+    gold = [a_gold_item("G1", refs=["A-1"])]
+    findings = [
+        a_finding("F1", refs=["A-1"], confidence=0.9),
+        a_finding("F2", refs=["A-1"], confidence=0.5),
+    ]
+
+    report = match_findings(findings, gold)
+
+    assert [a.finding_id for a in report.matches] == ["F1"]
+    assert [d.finding_id for d in report.duplicates] == ["F2"]
+    assert report.duplicates[0].gold_ids == ["G1"]
+    assert report.unmatched == []
+    assert report.partials == []
+
+
+def test_a_duplicate_counts_against_strict_precision() -> None:
+    # Five variants of one finding is a real problem for whoever has to read them.
+    gold = [a_gold_item("G1", refs=["A-1"])]
+    findings = [
+        a_finding("F1", refs=["A-1"], confidence=0.9),
+        a_finding("F2", refs=["A-1"], confidence=0.5),
+        a_finding("F3", refs=["A-1"], confidence=0.4),
+    ]
+
+    card = scored_run(gold, findings)
+
+    # 1 match over (1 match + 0 unmatched + 2 duplicates) = 1/3.
+    assert card.duplicates == 2
+    assert card.precisions.strict == pytest.approx(1 / 3)
+    assert card.precisions.strict_support == 3
+
+
+def test_a_duplicate_never_enters_the_adjudication_queue() -> None:
+    # Asking a human to rule on it spends the scarcest resource in the loop on a question
+    # already answered.
+    gold = [a_gold_item("G1", refs=["A-1"])]
+    findings = [
+        a_finding("F1", refs=["A-1"], confidence=0.9),
+        a_finding("F2", refs=["A-1"], confidence=0.5),  # duplicate
+        a_finding("F3", refs=["Z-9"]),  # genuinely unmatched
+    ]
+    report = match_findings(findings, gold)
+
+    queue = queue_from_findings(findings, report.unmatched, tender_name="fixture")
+
+    assert [d.finding_id for d in report.duplicates] == ["F2"]
+    assert [entry.finding_id for entry in queue.entries] == ["F3"]
+
+
+def test_a_finding_that_only_anchors_a_claimed_item_is_partial_not_duplicate() -> None:
+    # DUPLICATE needs both anchor and type. Anchoring alone is still PARTIAL: it has not
+    # shown that it refers to the same defect, only to the same clause.
+    gold = [a_gold_item("G1", refs=["A-1"], classes=["IMPLICIT"])]
+    findings = [
+        a_finding("F1", refs=["A-1"], confidence=0.9),
+        a_finding("F2", refs=["A-1"], finding_type="contract_red_flag"),
+    ]
+
+    report = match_findings(findings, gold)
+
+    assert [a.finding_id for a in report.matches] == ["F1"]
+    assert [p.finding_id for p in report.partials] == ["F2"]
+    assert report.duplicates == []
+
+
+def test_duplicate_beats_partial_when_a_finding_is_both() -> None:
+    # F2 anchors+types G1 (taken) and anchors-only G2. DUPLICATE is the more specific and
+    # more useful label: it names a defect the run already reported.
+    gold = [
+        a_gold_item("G1", refs=["A-1"], classes=["IMPLICIT"]),
+        a_gold_item("G2", refs=["A-2"], classes=["PROCESS"], finding_type="submission_constraint"),
+    ]
+    findings = [
+        a_finding("F1", refs=["A-1"], confidence=0.9),
+        a_finding("F2", refs=["A-1", "A-2"], confidence=0.5),
+    ]
+
+    report = match_findings(findings, gold)
+
+    assert [d.finding_id for d in report.duplicates] == ["F2"]
+    assert report.partials == []
+
+
+def test_a_duplicate_does_not_stop_a_gold_item_being_found() -> None:
+    gold = [a_gold_item("G1", refs=["A-1"])]
+    findings = [a_finding("F1", refs=["A-1"]), a_finding("F2", refs=["A-1"], confidence=0.1)]
+
+    card = scored_run(gold, findings)
+
+    assert card.recall_overall == 1.0
+    assert card.misses == 0
 
 
 # --- recall, weighted and broken out --------------------------------------------------------------
@@ -994,3 +1177,45 @@ def test_a_report_table_with_no_rows_says_none_rather_than_rendering_empty() -> 
     card = scored_run([], [])
 
     assert "_none_" in render_markdown(card)
+
+
+def test_the_report_shows_the_duplicate_count() -> None:
+    gold = [a_gold_item("G1", refs=["A-1"])]
+    findings = [
+        a_finding("F1", refs=["A-1"], confidence=0.9),
+        a_finding("F2", refs=["A-1"], confidence=0.5),
+    ]
+
+    markdown = render_markdown(scored_run(gold, findings))
+
+    assert "| DUPLICATE | 1 |" in markdown
+    assert "never adjudicated" in markdown
+
+
+def test_the_greedy_rule_is_the_definition_not_an_approximation() -> None:
+    """Pins the documented trade-off: greedy really can credit fewer items than an optimum.
+
+    G1 cites A-1; G2 cites A-1 and A-2. F1 cites both, so it overlaps G2 by two and G1 by
+    one; F2 cites only A-2, so it overlaps G2 by one and G1 not at all.
+
+    Greedy takes the highest-ranked pair first — F1 to G2, overlap 2 — which spends F1 and
+    G2 and leaves F2 with nothing it can answer. One match, G1 missed, F2 a duplicate. An
+    optimal assignment would pair F1 with G1 and F2 with G2: **two** matches, recall 100%
+    instead of 50%.
+
+    That is accepted, because the rule is greedy *by definition*: the score is one anybody
+    can re-derive by hand from the stated order, rather than one whose value depends on
+    which solver ran. If this test ever needs changing, the definition changed with it.
+    """
+    gold = [a_gold_item("G1", refs=["A-1"]), a_gold_item("G2", refs=["A-1", "A-2"])]
+    findings = [
+        a_finding("F1", refs=["A-1", "A-2"], confidence=0.9),
+        a_finding("F2", refs=["A-2"], confidence=0.9),
+    ]
+
+    report = match_findings(findings, gold)
+
+    assert [(a.finding_id, a.gold_id) for a in report.matches] == [("F1", "G2")]
+    assert report.misses == ["G1"]
+    assert [d.finding_id for d in report.duplicates] == ["F2"]
+    assert scored_run(gold, findings).recall_overall == pytest.approx(0.5)

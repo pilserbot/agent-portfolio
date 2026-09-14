@@ -133,7 +133,9 @@ class Precisions(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     strict: float = Field(ge=0.0, le=1.0)
-    strict_support: int = Field(ge=0, description="Matches plus unmatched findings.")
+    strict_support: int = Field(
+        ge=0, description="Matches, plus unmatched findings, plus duplicates."
+    )
     adjudicated: float = Field(ge=0.0, le=1.0)
     adjudicated_support: int = Field(ge=0, description="All findings.")
     true_new: int = Field(ge=0, description="Unmatched findings a human confirmed as real.")
@@ -169,6 +171,9 @@ class ScoreCard(BaseModel):
     matches: int = Field(ge=0)
     partials: int = Field(ge=0)
     output_misses: int = Field(ge=0)
+    duplicates: int = Field(
+        ge=0, description="Findings restating a defect another finding was credited with."
+    )
     unmatched: int = Field(ge=0)
     misses: int = Field(ge=0)
 
@@ -221,9 +226,12 @@ def score(
     implicit = [item for item in gold if IMPLICIT_CLASS in item.classes]
     no_bid_items = [item for item in gold if item.severity == "no_bid"]
 
-    strict_ids = [*sorted(report.matched_finding_ids), *report.unmatched]
+    # Which findings strict precision is measured over is the matcher's definition, not a
+    # list rebuilt here: matches, plus the unmatched, plus the duplicates. The arithmetic
+    # below is the spine's `precision` either way.
     strict = spine_metrics.precision(
-        _finding_verdicts(strict_ids, report.matched_finding_ids), positive_label=RELEVANT
+        _finding_verdicts(report.strict_denominator, report.matched_finding_ids),
+        positive_label=RELEVANT,
     )
     adjudicated = spine_metrics.precision(
         _finding_verdicts(list(finding_ids), report.matched_finding_ids | confirmed_new),
@@ -256,6 +264,7 @@ def score(
         matches=len(report.matches),
         partials=len(report.partials),
         output_misses=len(report.output_misses),
+        duplicates=len(report.duplicates),
         unmatched=len(report.unmatched),
         misses=len(report.misses),
     )

@@ -17,6 +17,13 @@ Anything still ``null`` is pending and is reported as such. Pending is not a qui
 `precision_strict` counts every unmatched finding against the system regardless, and both
 precisions are always shown together, so an unreviewed queue cannot flatter a run.
 
+**Only UNMATCHED findings reach this queue.** A ``DUPLICATE`` — one that anchors and types
+onto a gold item another finding was already credited with — never does. It is not a
+candidate new defect: it demonstrably refers to a known one, and asking a human to rule on
+it would spend the scarcest resource in the loop on a question already answered. It still
+counts against strict precision, because five variants of one finding is a real problem for
+whoever has to read them; it is simply not a question for a reviewer.
+
 Deliberately does not: decide a verdict. Nothing here infers, guesses or asks a model
 whether an unmatched finding is real — the whole point of the file is that a person writes
 that word. It also never edits the gold set: a confirmed new finding is recorded here, and
@@ -134,7 +141,11 @@ class AdjudicationQueue(BaseModel):
 def queue_from_findings(
     findings: Sequence[Finding], unmatched_ids: Sequence[str], *, tender_name: str
 ) -> AdjudicationQueue:
-    """Build a queue from the findings a match report left unmatched, in finding-id order."""
+    """Build a queue from the findings a match report left unmatched, in finding-id order.
+
+    Pass `MatchReport.unmatched` and nothing else. Duplicates are deliberately absent from
+    that list — see the module docstring.
+    """
     wanted = set(unmatched_ids)
     entries = [
         AdjudicationEntry(
