@@ -1,8 +1,10 @@
 # RI-05 — Gold Set Labelling and Scoring Contract
 
-**Step 4.4 · first pass · 13 September 2026**
+**Step 4.4 · first pass · 13 September 2026 — amended at rev 3, 14 September 2026**
 
 The gold set is the answer key. This document says what a label means, how an emitted finding is matched to a label, and how the KPIs are computed from those matches. It is written before any measurement is taken, so the numbers cannot be defined after the fact to suit the result.
+
+> **Amended at rev 3.** The IMPLICIT class was wrong and has been split into UNSTATED (32) and DISPLACED (40). The claim in §1 and §4 that a "shall" search recovers none of the 72 was asserted here, never measured, and is false — a "shall" grep recovered 20 of them. Every superseded passage below is struck through rather than deleted, so this document reads as what it is: a contract written before the measurement, corrected by it. The full account is in **`CORRECTION_implicit_class.md`** beside this file.
 
 ---
 
@@ -12,19 +14,25 @@ The gold set is the answer key. This document says what a label means, how an em
 |---|---|
 | Gold items | **187** (186 scored — see `REVIEW_ROUND_1.md`) |
 | Class labels across them | **199** (many items carry two) |
-| Implicit — no "shall" statement anywhere | **72 (38.5%)** |
+| ~~Implicit — no "shall" statement anywhere~~ **Withdrawn at rev 3** | ~~**72 (38.5%)**~~ |
+| → **UNSTATED** — no requirement sentence exists anywhere in the package | **32 (17.1%)** |
+| → **DISPLACED** — written out as a "shall" clause, in a drawing note, annex or federal-provisions clause | **40 (21.4%)** |
 | Cold-start detectable — documents alone | **176** |
 | Needing client data for the full finding | **11** |
 | Flagged for close review | **37** (21 reviewed at round 1) |
 
 > **Correction to the ledger's headline.** The ledger reported "199 planted defects". 199 is the number of *class labels*; the number of distinct defects is **187**. The implicit count was reported as 68 (34%) from summing per-document subtotals that omitted secondary tags; counted from the rows it is **72 (38.5%)**. Both figures are corrected in the ledger and the package index. The implicit share went up, not down — but it is now counted rather than asserted.
+>
+> *Superseded at rev 3:* the 72 was counted correctly and labelled wrongly. It is 32 UNSTATED + 40 DISPLACED, and there is no combined figure.
 
 Files:
 
 | File | What it is |
 |---|---|
-| `gold_set.jsonl` | Machine form, **rev 2** — review round 1 applied. One JSON object per line. This is what the harness loads. Items with `scored: false` are excluded. |
+| `gold_set.jsonl` | Machine form, **rev 3** — the IMPLICIT split applied. One JSON object per line. This is what the harness loads. Items with `scored: false` are excluded. |
+| `gold_set_rev2.jsonl` | Rev 2, retained byte-for-byte: the pre-split file, with IMPLICIT still on all 72. |
 | `gold_set_rev1.jsonl` | The pre-review first pass, retained for provenance. |
+| `CORRECTION_implicit_class.md` | **What the claim was, that it was false, and what the measurement showed.** Read it before quoting any recovery figure. |
 | `REVIEW_ROUND_1.md` | What the reviewer changed and why. |
 | `gold_set.yaml` | The same records, readable and editable. |
 | `GOLD_SET_REVIEW_rev2.xlsx` | Review workbook — now carries each item's review status and a fresh verdict column for round 2. |
@@ -80,10 +88,19 @@ Outcomes:
 | **Match** | Anchor and type both hold | Found |
 | **Partial** | Anchor holds, type does not | Reported separately; **not** counted as found |
 | **Output miss** | Match holds but a required `expects_*` output is absent | **Not** counted as found; reported as its own class |
+| **Duplicate** | Anchors and types onto an item another finding already holds | **Not** counted as found; counts against `precision_strict`, never adjudicated |
 | **Unmatched finding** | `F` matches no gold item | → adjudication queue |
 | **Miss** | `G` matched by nothing | Missed |
 
+Assignment is one-to-one and greedy over a stated total order — completeness, then anchor overlap, then confidence, then finding id. The score is *defined* as the greedy result rather than as the best assignment obtainable, so anyone can re-derive it by hand.
+
 Matching is deterministic Python. No model decides whether a finding counts.
+
+### A recovered statement must be the finding's own words — added at rev 3
+
+Every UNSTATED and DISPLACED item carries `expects_recovered_statement: true`. It is satisfied only when the finding carries a non-empty `recovered_statement` **and** that text, whitespace-collapsed and casefolded, is **not a verbatim span of any page of the tender**. A finding that quotes the source line scores `OUTPUT_MISS`.
+
+This exists because the version of this document written at rev 1 asserted that a keyword rule could not recover an obligation, and the assertion was false. Quoting is what a regex can do, and the matcher used to credit it: `finding_type` was asserted by the finding rather than earned. It is now checkable, and checked.
 
 ### Unmatched findings are not automatically false positives
 
@@ -108,14 +125,25 @@ recall_weighted         = Σ w(severity) · matched / Σ w(severity)      w = {n
 recall_by_class         = per the 19 classes
 recall_cold_start       = matched / 176        # the number that generalises to a new client
 recall_configured       = matched / 11
-implicit_recovery       = matched IMPLICIT / 72
-implicit_uplift         = implicit_recovery − keyword_baseline
+unstated_recovery       = matched UNSTATED / 32       # replaces implicit_recovery
+displaced_recovery      = matched DISPLACED / 40      # never added to the line above
+unstated_uplift         = unstated_recovery  − keyword_baseline_unstated
+displaced_uplift        = displaced_recovery − keyword_baseline_displaced
 no_bid_detection        = matched no_bid / 3   # must be 3/3 or the run fails the gate
 time_to_first_finding   = wall-clock seconds
 cost_per_run            = from the router's cost ledger, not from Langfuse
 ```
 
-**`keyword_baseline` is 0 by construction.** A search for "shall" across all thirteen documents returns none of the 72 implicit items, because none of them is written as a "shall" statement. That baseline is measured in the same CI job, not asserted — a one-line grep whose result is recorded alongside the model's.
+> ~~**`keyword_baseline` is 0 by construction.** A search for "shall" across all thirteen documents returns none of the 72 implicit items, because none of them is written as a "shall" statement.~~
+>
+> **Withdrawn at rev 3. This was asserted here and never measured, and it is false.** The grep recovered **20 of the 72** — 27.8% — because 40 of them are plain "shall" clauses displaced into annexes, drawing notes and federal-provisions text. The claim, and the single class it rested on, are replaced by the two classes above.
+
+**The floor is now measured, per class, and both figures are 0.0.** `ri05_tender.eval.baseline` runs the "shall" rule through the same loader and the same matcher as a real run and writes `evals/results/<tender>_keyword_baseline.json`; the `test` CI job recomputes it on every push and fails if a figure moves. Each zero is established rather than assumed, and for a different reason:
+
+- **UNSTATED 0/32 — structural.** No keyword finding anchors a single UNSTATED item, not even as a `PARTIAL`. There is no sentence to grep.
+- **DISPLACED 0/40 — earned by the recovery rule.** The rule still reaches **37 of the 40** on anchor and type. Relax `expects_recovered_statement` and exactly the 20 that were once published as implicit recovery come back. It fails because it can only quote.
+
+Neither figure may be added to the other, and neither uplift may be published until the pipeline exists and is measured against these floors.
 
 **The no-bid gate is a hard gate.** A run that misses any of D3-01, D3-02, D3-03 fails, whatever the other numbers say. A system that reads a contract and does not notice unlimited liability has no business quoting its recall.
 
@@ -164,7 +192,9 @@ The 37 high-priority rows, in this order:
 3. **The 12 `+domain_knowledge` items** — do these genuinely need world knowledge, or is the text sufficient? This is the axis the whole argument stands on, so it should be conservative.
 4. **The 9 demo-set items** — the ones that get shown. Every label on these is load-bearing.
 
-The remaining 150 are mostly implicit recoveries from the Bill of Quantities, the drawing register and the annexes, all graded `minor` and all cold-start. Spot-check fifteen and accept the rest.
+The remaining 150 are mostly UNSTATED items from the Bill of Quantities and DISPLACED ones from the drawing register and the annexes, all graded `minor` and all cold-start. Spot-check fifteen and accept the rest.
+
+**Added at rev 3 — the split itself needs a reviewer.** The 32/40 division was made by one rule: an item is DISPLACED if the clause its refs point to is itself written as a "shall" statement, and UNSTATED otherwise. The rule was applied independently to the loader's extracted text and agreed with the hand-made list on all 72, zero disagreements. What a second reader is still needed for is whether the *rule* is the right one — three UNSTATED items (IF-5.4, B-1.3, C-1.2) are clauses that state a fact rather than impose a duty, and whether "no duty is written" or "no sentence exists" is the class boundary is a judgement, not a measurement.
 
 ---
 
