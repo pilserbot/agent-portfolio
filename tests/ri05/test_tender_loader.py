@@ -308,6 +308,32 @@ def a_word_file(path: Path) -> Path:
     return path
 
 
+def an_awkward_word_file(path: Path) -> Path:
+    """A .docx holding the two shapes a real Word file has and a naive walk gets wrong.
+
+    A horizontally merged cell, and a table nested inside a table cell. Both were found by
+    building this file and reading the result, not by reading the documentation.
+    """
+    document = new_docx()
+    document.add_paragraph("Compliance Matrix")
+
+    outer = document.add_table(rows=2, cols=3)
+    outer.cell(0, 0).text = "REQ"
+    outer.cell(0, 1).text = "STATUS"
+    outer.cell(0, 2).text = "NOTE"
+    outer.cell(1, 0).merge(outer.cell(1, 1)).text = "TS-B.25 spans two columns"
+    outer.cell(1, 2).text = "Comply"
+
+    holder = document.add_table(rows=1, cols=1)
+    nested = holder.cell(0, 0).add_table(rows=1, cols=2)
+    nested.cell(0, 0).text = "NESTED-LEFT"
+    nested.cell(0, 1).text = "NESTED-RIGHT"
+
+    document.add_paragraph("Signed.")
+    document.save(str(path))
+    return path
+
+
 def test_a_word_document_is_one_page_because_word_has_no_fixed_pagination(tmp_path: Path) -> None:
     document = load_document(a_word_file(tmp_path / "response.docx"))
 
@@ -338,6 +364,45 @@ def test_a_word_documents_title_is_its_first_paragraph(tmp_path: Path) -> None:
 
 def test_a_word_document_reports_no_sheets(tmp_path: Path) -> None:
     assert load_document(a_word_file(tmp_path / "r.docx")).sheet_names == []
+
+
+def test_a_merged_cell_is_read_once_not_once_per_column_it_spans(tmp_path: Path) -> None:
+    # `row.cells` yields a merged cell once for every column it covers, so without the
+    # de-duplication the requirement text appears twice on one line — and a quote lifted
+    # into an EvidenceRef would carry the duplicate.
+    text = load_document(an_awkward_word_file(tmp_path / "m.docx")).page(1).text  # type: ignore[union-attr]
+
+    assert text.count("TS-B.25 spans two columns") == 1
+    assert "TS-B.25 spans two columns\tComply" in text
+
+
+def test_a_table_nested_inside_a_cell_is_read(tmp_path: Path) -> None:
+    # The same class of bug as `document.paragraphs` dropping tables, one level deeper:
+    # `cell.text` cannot see a table inside the cell, so its content would vanish.
+    text = load_document(an_awkward_word_file(tmp_path / "n.docx")).page(1).text  # type: ignore[union-attr]
+
+    assert "NESTED-LEFT" in text
+    assert "NESTED-RIGHT" in text
+    assert "NESTED-LEFT\tNESTED-RIGHT" in text
+
+
+def test_an_awkward_word_document_still_keeps_its_order(tmp_path: Path) -> None:
+    lines = load_document(an_awkward_word_file(tmp_path / "o.docx")).page(1).text.splitlines()  # type: ignore[union-attr]
+
+    assert lines[0] == "Compliance Matrix"
+    assert lines[1] == "REQ\tSTATUS\tNOTE"
+    assert lines[-1] == "Signed."
+
+
+def test_the_docx_reader_uses_no_private_python_docx_attribute() -> None:
+    # A loader built on someone's implementation detail breaks on their next release. The
+    # in-order walk is `iter_inner_content()`, which is public on both Document and _Cell.
+    source = Path("apps/ri05_tender/src/ri05_tender/tender/loader.py").read_text(encoding="utf-8")
+    docx_section = source.split("def _cell_content(", 1)[1].split("def load_document(", 1)[0]
+
+    assert "iter_inner_content" in docx_section
+    assert "._tc" not in docx_section
+    assert ".element.body" not in docx_section
 
 
 # --- the production path: a tender with no answer key ----------------------------------------

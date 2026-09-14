@@ -47,9 +47,15 @@ input to everything after.
 - **DOCX** — the whole document as page 1. Word has no fixed pagination: where a page
   breaks depends on the renderer, the fonts installed and the paper size, so any page
   number this module invented would be a different number on the next machine. One page is
-  the honest answer. Tables are read in document order alongside the paragraphs, because
-  `python-docx`'s `paragraphs` silently omits every table cell and a compliance matrix is
-  almost entirely table.
+  the honest answer.
+
+  Tables are read in document order alongside the paragraphs, because `python-docx`'s
+  `paragraphs` silently omits every table cell and a compliance matrix is almost entirely
+  table. Two further traps, both found by building a file that contains them rather than by
+  reading the docs: a **merged cell** is yielded once per column it spans and would repeat
+  its text across the line, and a **table nested inside a cell** is invisible to
+  `cell.text` in the same way a top-level table is invisible to `paragraphs`. Both are
+  handled, and both are pinned by a test — see `_table_lines`.
 
 Deliberately does not: call a model, reach a network, interpret anything it reads, or open
 the gold set. It identifies no requirement, parses no clause and judges no answer — it
@@ -66,7 +72,7 @@ from pathlib import Path
 
 import pdfplumber
 from docx import Document as open_docx
-from docx.table import Table
+from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 from openpyxl import load_workbook
 
@@ -196,22 +202,68 @@ def _xlsx_pages(path: Path, document_id: str) -> tuple[list[DocumentPage], list[
     return pages, sheet_names, sheet_names[0] if sheet_names else ""
 
 
+def _cell_content(cell: _Cell) -> tuple[str, list[str]]:
+    """One cell's own text, and the lines of any table nested inside it.
+
+    A cell's paragraphs are joined with a space so the cell stays one column of its row;
+    a nested table cannot, so it comes back separately to be emitted as its own rows.
+    """
+    own: list[str] = []
+    nested: list[str] = []
+    for item in cell.iter_inner_content():
+        if isinstance(item, Paragraph):
+            if item.text:
+                own.append(item.text)
+        else:
+            nested.extend(_table_lines(item))
+    return " ".join(own), nested
+
+
+def _table_lines(table: Table) -> list[str]:
+    """One line per table row, cells tab-separated, nested tables following their row.
+
+    Two things Word does that a naive walk gets wrong, both found by probing a file with
+    them in it rather than by reading the docs:
+
+    - A merged cell is yielded by `row.cells` once for every column it spans, so its text
+      would appear two or three times across one line. `row.cells` returns the *same* cell
+      object each time, so identity is what de-duplicates it.
+    - A table nested inside a cell is invisible to `cell.text`, exactly as a top-level
+      table is invisible to `document.paragraphs`. Its rows are emitted after the row that
+      holds it, so nothing is dropped.
+    """
+    lines: list[str] = []
+    for row in table.rows:
+        texts: list[str] = []
+        nested: list[str] = []
+        seen: list[_Cell] = []
+        for cell in row.cells:
+            if any(cell is already for already in seen):
+                continue
+            seen.append(cell)
+            text, inner = _cell_content(cell)
+            texts.append(text)
+            nested.extend(inner)
+        lines.append("\t".join(texts).rstrip("\t"))
+        lines.extend(nested)
+    return lines
+
+
 def _docx_blocks(path: Path) -> list[str]:
     """Paragraph and table text in document order.
 
-    Walked over the body's own children rather than through `document.paragraphs`, which
-    omits every table cell — verified against python-docx before relying on it.
+    Through `iter_inner_content()`, which is public and yields paragraphs and tables in the
+    order they appear. `document.paragraphs` omits every table cell — verified against the
+    installed python-docx before relying on it — and a compliance matrix is almost entirely
+    table, so reading only the paragraphs would lose the document.
     """
     document = open_docx(str(path))
     blocks: list[str] = []
-    for child in document.element.body.iterchildren():
-        if child.tag.endswith("}p"):
-            blocks.append(Paragraph(child, document).text)
-        elif child.tag.endswith("}tbl"):
-            table = Table(child, document)
-            blocks.extend(
-                "\t".join(cell.text for cell in row.cells).rstrip("\t") for row in table.rows
-            )
+    for item in document.iter_inner_content():
+        if isinstance(item, Paragraph):
+            blocks.append(item.text)
+        else:
+            blocks.extend(_table_lines(item))
     return blocks
 
 
