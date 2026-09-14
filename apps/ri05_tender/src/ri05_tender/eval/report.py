@@ -2,7 +2,9 @@
 
 The order is deliberate. The header states how many items were scored **and how many were
 excluded**, because a denominator that shrank without anyone saying so is the easiest way
-for a score to improve while the system does not. Then the headline figures, then recall
+for a score to improve while the system does not. Then the headline figures — with UNSTATED
+and DISPLACED recovery on separate rows, each carrying its own denominator, because they
+were one row until rev 3 and that row was measuring two different things — then recall
 broken out three ways, then the no-bid gate on a line of its own, then the outcomes that
 are neither a find nor a clean miss: PARTIAL, OUTPUT_MISS, DUPLICATE, and the findings
 still waiting on a human.
@@ -56,9 +58,14 @@ def render_markdown(result: ScoreCard) -> str:
                 ),
                 ("Recall (severity-weighted)", f"{result.recall_weighted:.1%}", "by weight"),
                 (
-                    "Implicit recovery",
-                    f"{result.implicit_recovery:.1%}",
-                    f"{result.implicit_total} item(s)",
+                    "UNSTATED recovery",
+                    f"{result.unstated_recovery:.1%}",
+                    f"{result.unstated_total} item(s)",
+                ),
+                (
+                    "DISPLACED recovery",
+                    f"{result.displaced_recovery:.1%}",
+                    f"{result.displaced_total} item(s)",
                 ),
                 (
                     "Precision (strict)",
@@ -77,6 +84,11 @@ def render_markdown(result: ScoreCard) -> str:
         "Both precisions are shown because the gold set records what was *planted*, not "
         "every defect in the package: strict counts every unmatched finding against the "
         "system, adjudicated counts only the ones a human called wrong.",
+        "",
+        "UNSTATED and DISPLACED recovery are two rows and never one. UNSTATED items are "
+        "written nowhere in the package; DISPLACED items are written out plainly, in a "
+        "drawing note or an annex nobody reads. Reading finds the second and cannot find "
+        "the first, so an average over both says less the more it moves.",
         "",
         "### Recall by severity",
         "",

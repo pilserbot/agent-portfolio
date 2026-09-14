@@ -7,7 +7,7 @@ a zero denominator is 0.0 over a support of 0, never an error and never a NaN. F
 arithmetic would give this package a second definition of recall to keep in step with the
 first.
 
-Two things this module refuses to let a caller do:
+Three things this module refuses to let a caller do:
 
 - **Report one precision without the other.** `Precisions` carries both as required fields,
   so there is no way to construct half of it. Strict precision counts every unmatched
@@ -17,6 +17,12 @@ Two things this module refuses to let a caller do:
 - **Pass the no-bid gate on average.** The gate is not a rate. It is True only when every
   scored `no_bid` item was fully matched, because a bid that goes out on a tender the
   system should have refused is not offset by finding ninety other things.
+- **Add UNSTATED recovery to DISPLACED recovery.** There is no combined figure and there is
+  no field to put one in. The two used to be one class, IMPLICIT, and summing them is what
+  hid the difference: finding an obligation that is written out somewhere nobody looks is a
+  reading problem, and finding one that is written nowhere is an inference problem. A single
+  ratio over both is an average of two different capabilities, and it moves when the mix
+  changes rather than when the system does.
 
 Deliberately does not: decide what a good score is, weight anything the caller did not ask
 for, or call a model. The severity weights are the ones specified and they are constants
@@ -27,7 +33,7 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ri05_tender.eval.matcher import IMPLICIT_CLASS, MatchReport
+from ri05_tender.eval.matcher import DISPLACED_CLASS, UNSTATED_CLASS, MatchReport
 from ri05_tender.eval.models import GoldItem, Severity
 from spine.contracts import Verdict
 from spine.eval import metrics as spine_metrics
@@ -154,8 +160,24 @@ class ScoreCard(BaseModel):
 
     recall_overall: float = Field(ge=0.0, le=1.0)
     recall_weighted: float = Field(ge=0.0, le=1.0)
-    implicit_recovery: float = Field(ge=0.0, le=1.0)
-    implicit_total: int = Field(ge=0)
+
+    # Reported side by side and never summed — see the module docstring. Both carry their
+    # denominator, because "68%" of a group whose size nobody stated is not a figure.
+    unstated_recovery: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Recall over items no sentence in the package states. Nothing to read; "
+        "the obligation has to be inferred from a quantity, a row or a scope word.",
+    )
+    unstated_total: int = Field(ge=0)
+    displaced_recovery: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Recall over items written out plainly, but somewhere a requirements "
+        "review never goes. Readable — which is the point: it is the half a keyword rule "
+        "has any claim on, so it is where an uplift figure has to be earned.",
+    )
+    displaced_total: int = Field(ge=0)
 
     by_class: list[Breakdown] = Field(default_factory=list)
     by_tier: list[Breakdown] = Field(default_factory=list)
@@ -223,7 +245,8 @@ def score(
         by_tier.setdefault(item.tier, []).append(item)
         by_severity.setdefault(item.severity, []).append(item)
 
-    implicit = [item for item in gold if IMPLICIT_CLASS in item.classes]
+    unstated = [item for item in gold if UNSTATED_CLASS in item.classes]
+    displaced = [item for item in gold if DISPLACED_CLASS in item.classes]
     no_bid_items = [item for item in gold if item.severity == "no_bid"]
 
     # Which findings strict precision is measured over is the matcher's definition, not a
@@ -245,8 +268,10 @@ def score(
         findings=len(finding_ids),
         recall_overall=_recall_of(gold, report).value,
         recall_weighted=_weighted_recall(gold, report),
-        implicit_recovery=_recall_of(implicit, report).value,
-        implicit_total=len(implicit),
+        unstated_recovery=_recall_of(unstated, report).value,
+        unstated_total=len(unstated),
+        displaced_recovery=_recall_of(displaced, report).value,
+        displaced_total=len(displaced),
         by_class=_breakdowns(gold, report, by_class),
         by_tier=_breakdowns(gold, report, by_tier),
         by_severity=_breakdowns(gold, report, by_severity),

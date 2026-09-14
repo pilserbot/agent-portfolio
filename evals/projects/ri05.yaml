@@ -5,11 +5,13 @@
 # good looks like". `compute_kpis` refuses to measure a metric with no target rather than
 # inventing one, so this config declares the instrument without pretending to a standard.
 #
-# A target here would be a number somebody made up. The pipeline does not exist yet, the
+# A target here would be a number somebody made up. The pipeline does not exist yet, and the
 # keyword baseline in evals/results/kessler_point_keyword_baseline.json is the only measured
-# figure on this project, and it says the implicit-recovery denominator is not yet what it
-# claims to be. Setting targets before that is settled would be setting them against a
-# metric nobody trusts.
+# figure on this project. That baseline is also why the IMPLICIT class no longer exists: it
+# recovered 20 of the 72 items labelled implicit, against a written claim that it would
+# recover none, because 40 of them were plain "shall" clauses displaced into annexes and
+# drawing notes. The class is now UNSTATED (32) and DISPLACED (40), measured separately —
+# see gold/CORRECTION_implicit_class.md beside the tender.
 project: ri05
 description: >-
   Tender response engine: read a tender package, find the defects a presale engineer would
@@ -66,7 +68,11 @@ kpis:
         Recall over the cold_start tier: what the system finds with no configuration, no
         company facts and no catalogue. The number a first run on a new tender would give.
 
-    - name: implicit_recovery
+    # The four metrics that replaced implicit_recovery and implicit_uplift. Two classes, two
+    # recoveries, two uplifts, and no figure anywhere that adds them: an average over both is
+    # an average of two different capabilities, and it moves when the mix changes rather than
+    # when the system does.
+    - name: unstated_recovery
       unit: ratio
       target: null # UNSET
       direction: higher_is_better
@@ -75,10 +81,27 @@ kpis:
       positive_label: "yes"
       tolerance: 0.02
       description: >-
-        Recall over items carrying the IMPLICIT class — obligations the package does not
-        state. Do not publish this without the uplift below beside it.
+        Recall over the 32 UNSTATED items — obligations no sentence in the package states,
+        living in a Bill of Quantities line, a Pricing Schedule row or a scope word buried in
+        prose. Nothing to retrieve; the obligation has to be inferred. Do not publish without
+        unstated_uplift beside it.
 
-    - name: implicit_uplift
+    - name: displaced_recovery
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: test
+      computation: recall
+      positive_label: "yes"
+      tolerance: 0.02
+      description: >-
+        Recall over the 40 DISPLACED items — obligations written out plainly as "shall"
+        clauses, but in a drawing note, an annex or a federal-provisions clause where a
+        requirements review never goes. Readable, which is the point: this is the half a
+        keyword rule has any claim on, so it is where an uplift figure has to be earned. Do
+        not publish without displaced_uplift beside it.
+
+    - name: unstated_uplift
       unit: ratio
       target: null # UNSET
       direction: higher_is_better
@@ -86,12 +109,25 @@ kpis:
       computation: mean_score
       tolerance: 0.02
       description: >-
-        Implicit recovery above the keyword baseline in
-        evals/results/kessler_point_keyword_baseline.json. The baseline is measured in CI on
-        the same documents through the same extraction and the same matcher. NOTE: that
-        baseline currently recovers 20 of 72 IMPLICIT items, which it should not be able to
-        do — see tests/ri05/test_scoring_baseline.py. Until that is settled this metric's
-        denominator is unsound and no uplift figure should be published.
+        unstated_recovery above the keyword baseline, which measures 0.0 on this class and is
+        0.0 structurally: a rule that searches sentences cannot produce a candidate for an
+        obligation that has no sentence. A floor of zero makes this uplift equal to the
+        recovery itself, and it is still reported separately so that stays visible rather
+        than assumed.
+
+    - name: displaced_uplift
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: analysis
+      computation: mean_score
+      tolerance: 0.02
+      description: >-
+        displaced_recovery above the keyword baseline, measured in CI on the same documents
+        through the same extraction and the same matcher. The floor is 0.0, and unlike the
+        UNSTATED floor it is 0.0 on the merits: the keyword rule reaches 37 of these 40 items
+        on anchor and type, and fails only the requirement to state the obligation in its own
+        words rather than quote it. This is the number that means something.
 
     - name: precision_strict
       unit: ratio
