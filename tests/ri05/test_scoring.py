@@ -29,14 +29,18 @@ from ri05_tender.eval.matcher import (
     CLASS_TO_FINDING_TYPE,
     OUTCOME_RANK,
     MatcherError,
+    SourceText,
     allowed_finding_types,
+    flatten,
     match_findings,
     normalise_ref,
+    recovers_statement,
+    source_text,
 )
-from ri05_tender.eval.metrics import SEVERITY_WEIGHTS, score
+from ri05_tender.eval.metrics import SEVERITY_WEIGHTS, ScoreCard, score
 from ri05_tender.eval.models import Finding, FindingOutputs, GoldItem, GoldReview
 from ri05_tender.eval.report import render_markdown
-from ri05_tender.tender.models import TenderPackage
+from ri05_tender.tender.models import DocumentPage, TenderDocument, TenderPackage
 
 KESSLER_POINT = Path("data/tenders/kessler_point")
 AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
@@ -50,7 +54,7 @@ def a_gold_item(
     *,
     refs: list[str] | None = None,
     classes: list[str] | None = None,
-    finding_type: str = "implicit_requirement",
+    finding_type: str = "displaced_requirement",
     severity: str = "major",
     tier: str = "cold_start",
     scored: bool = True,
@@ -60,7 +64,7 @@ def a_gold_item(
         "id": gold_id,
         "document": 1,
         "refs": refs or [f"ITB-{gold_id}"],
-        "classes": classes or ["IMPLICIT"],
+        "classes": classes or ["DISPLACED"],
         "finding_type": finding_type,
         "severity": severity,
         "tier": tier,
@@ -75,7 +79,7 @@ def a_finding(
     finding_id: str,
     *,
     refs: list[str],
-    finding_type: str = "implicit_requirement",
+    finding_type: str = "displaced_requirement",
     severity: str = "major",
     confidence: float = 0.9,
     **outputs: object,
@@ -174,9 +178,9 @@ def test_hyphens_are_collapsed_not_removed() -> None:
 
 def test_every_class_of_a_multi_class_item_widens_the_allowed_types() -> None:
     # Reading only the first class would mark a correct contract_red_flag finding wrong.
-    item = a_gold_item("G1", classes=["IMPLICIT", "COMMERCIAL"])
+    item = a_gold_item("G1", classes=["DISPLACED", "COMMERCIAL"])
 
-    assert allowed_finding_types(item) == {"implicit_requirement", "contract_red_flag"}
+    assert allowed_finding_types(item) == {"displaced_requirement", "contract_red_flag"}
 
 
 def test_an_unmapped_class_stops_the_run_rather_than_never_matching() -> None:
@@ -238,7 +242,7 @@ def test_missing_one_no_bid_item_fails_the_gate_whatever_else_scored() -> None:
 def test_an_anchor_only_match_is_partial_and_does_not_count_as_found() -> None:
     # Right clause, wrong kind of finding: a different failure from not looking.
     gold = [a_gold_item("G1", refs=["ITB-9.2"], classes=["PROCESS"])]
-    findings = [a_finding("F1", refs=["ITB-9.2"], finding_type="implicit_requirement")]
+    findings = [a_finding("F1", refs=["ITB-9.2"], finding_type="displaced_requirement")]
 
     report = match_findings(findings, gold)
 
@@ -617,7 +621,7 @@ def test_a_duplicate_never_enters_the_adjudication_queue() -> None:
 def test_a_finding_that_only_anchors_a_claimed_item_is_partial_not_duplicate() -> None:
     # DUPLICATE needs both anchor and type. Anchoring alone is still PARTIAL: it has not
     # shown that it refers to the same defect, only to the same clause.
-    gold = [a_gold_item("G1", refs=["A-1"], classes=["IMPLICIT"])]
+    gold = [a_gold_item("G1", refs=["A-1"], classes=["DISPLACED"])]
     findings = [
         a_finding("F1", refs=["A-1"], confidence=0.9),
         a_finding("F2", refs=["A-1"], finding_type="contract_red_flag"),
@@ -634,7 +638,7 @@ def test_duplicate_beats_partial_when_a_finding_is_both() -> None:
     # F2 anchors+types G1 (taken) and anchors-only G2. DUPLICATE is the more specific and
     # more useful label: it names a defect the run already reported.
     gold = [
-        a_gold_item("G1", refs=["A-1"], classes=["IMPLICIT"]),
+        a_gold_item("G1", refs=["A-1"], classes=["DISPLACED"]),
         a_gold_item("G2", refs=["A-2"], classes=["PROCESS"], finding_type="submission_constraint"),
     ]
     findings = [
@@ -725,28 +729,48 @@ def test_recall_is_broken_out_by_severity_tier_and_class() -> None:
     # of which G3 was found: 1/3.
     assert tier["configured"].value == 1.0
     assert tier["cold_start"].value == pytest.approx(1 / 3)
-    # IMPLICIT covers G1, G3, G4; two of the three were found.
-    assert klass["IMPLICIT"].value == pytest.approx(2 / 3)
+    # DISPLACED covers G1, G3, G4; two of the three were found.
+    assert klass["DISPLACED"].value == pytest.approx(2 / 3)
     assert klass["COMMERCIAL"].value == 0.0
 
 
-def test_implicit_recovery_is_recall_over_the_implicit_items_only() -> None:
+def test_the_two_recoveries_are_recall_over_their_own_class_and_nothing_else() -> None:
     gold = [
-        a_gold_item("G1", classes=["IMPLICIT"]),
-        a_gold_item("G2", classes=["IMPLICIT"]),
-        a_gold_item("G3", classes=["PROCESS"], finding_type="submission_constraint"),
+        a_gold_item("G1", classes=["DISPLACED"]),
+        a_gold_item("G2", classes=["DISPLACED"]),
+        a_gold_item("G3", classes=["UNSTATED"], finding_type="unstated_requirement"),
+        a_gold_item("G4", classes=["UNSTATED"], finding_type="unstated_requirement"),
+        a_gold_item("G5", classes=["PROCESS"], finding_type="submission_constraint"),
     ]
     findings = [
         a_finding("F1", refs=["ITB-G1"]),
-        a_finding("F3", refs=["ITB-G3"], finding_type="submission_constraint"),
+        a_finding("F3", refs=["ITB-G3"], finding_type="unstated_requirement"),
+        a_finding("F4", refs=["ITB-G4"], finding_type="unstated_requirement"),
+        a_finding("F5", refs=["ITB-G5"], finding_type="submission_constraint"),
     ]
 
     card = scored_run(gold, findings)
 
-    # 1 of the 2 IMPLICIT items, not 2 of 3 overall.
-    assert card.implicit_recovery == pytest.approx(0.5)
-    assert card.implicit_total == 2
-    assert card.recall_overall == pytest.approx(2 / 3)
+    # 1 of the 2 DISPLACED items and 2 of the 2 UNSTATED ones — each over its own
+    # denominator, neither over the four of them together.
+    assert (card.displaced_recovery, card.displaced_total) == (pytest.approx(0.5), 2)
+    assert (card.unstated_recovery, card.unstated_total) == (1.0, 2)
+    assert card.recall_overall == pytest.approx(4 / 5)
+
+
+def test_there_is_no_combined_recovery_figure_to_quote() -> None:
+    # The two were one class, IMPLICIT, and one ratio over both hid that a "shall" grep
+    # reaches every DISPLACED item and no UNSTATED one. There is no field to put the
+    # average back into, and this is the test that says so on purpose.
+    fields = set(ScoreCard.model_fields)
+
+    assert "unstated_recovery" in fields
+    assert "displaced_recovery" in fields
+    assert not {name for name in fields if "implicit" in name}
+    assert not {name for name in fields if "recovery" in name} - {
+        "unstated_recovery",
+        "displaced_recovery",
+    }
 
 
 def test_a_group_with_no_items_reports_zero_over_zero_rather_than_raising() -> None:
@@ -754,7 +778,8 @@ def test_a_group_with_no_items_reports_zero_over_zero_rather_than_raising() -> N
 
     assert card.recall_overall == 0.0
     assert card.recall_weighted == 0.0
-    assert card.implicit_recovery == 0.0
+    assert card.unstated_recovery == 0.0
+    assert card.displaced_recovery == 0.0
 
 
 # --- precision, both of them ----------------------------------------------------------------------
@@ -813,10 +838,10 @@ def test_unscored_items_are_excluded_from_every_denominator(tmp_path: Path) -> N
     path = write_gold(
         tmp_path / "gold" / "gold_set.jsonl",
         [
-            a_gold_payload(id="G1", refs=["ITB-1"], classes=["IMPLICIT"]),
-            a_gold_payload(id="G2", refs=["ITB-2"], classes=["IMPLICIT"], severity="no_bid"),
+            a_gold_payload(id="G1", refs=["ITB-1"], classes=["DISPLACED"]),
+            a_gold_payload(id="G2", refs=["ITB-2"], classes=["DISPLACED"], severity="no_bid"),
             a_gold_payload(
-                id="G3", refs=["ITB-3"], classes=["IMPLICIT"], severity="critical", scored=False
+                id="G3", refs=["ITB-3"], classes=["DISPLACED"], severity="critical", scored=False
             ),
         ],
     )
@@ -1219,3 +1244,177 @@ def test_the_greedy_rule_is_the_definition_not_an_approximation() -> None:
     assert report.misses == ["G1"]
     assert [d.finding_id for d in report.duplicates] == ["F2"]
     assert scored_run(gold, findings).recall_overall == pytest.approx(0.5)
+
+
+# --- a recovered statement must be the finding's own words -----------------------------------
+
+TENDER_LINE = "TS-1.1 All equipment shall be new, unused, and of current manufacture."
+
+
+def a_source(*lines: str) -> SourceText:
+    """A SourceText over pages built from the given lines, one page each."""
+    return source_text(
+        TenderPackage(
+            name="fixture",
+            root_path=Path("data/tenders/fixture"),
+            documents=[
+                TenderDocument(
+                    document_id=f"{n:02d}_doc",
+                    filename=f"{n:02d}_doc.pdf",
+                    media_type="pdf",
+                    title=f"Document {n}",
+                    pages=[DocumentPage(document_id=f"{n:02d}_doc", page_number=1, text=line)],
+                    sha256=f"{n:064d}",
+                )
+                for n, line in enumerate(lines or (TENDER_LINE,), start=1)
+            ],
+            has_gold=False,
+            gold_path=None,
+        )
+    )
+
+
+def a_recovery_item(gold_id: str = "G1", **overrides: object) -> GoldItem:
+    return a_gold_item(gold_id, expects_recovered_statement=True, **overrides)  # type: ignore[arg-type]
+
+
+def recovery_run(item: GoldItem, finding: Finding, source: SourceText | None = None) -> object:
+    report = match_findings([finding], [item], source=source or a_source())
+    return report
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("  All   equipment\n shall be new. ", "all equipment shall be new."),
+        ("ALL EQUIPMENT", "all equipment"),
+        ("a\tb\nc", "a b c"),
+        ("", ""),
+    ],
+)
+def test_flatten_collapses_whitespace_and_case_and_nothing_else(raw: str, expected: str) -> None:
+    # Punctuation and word forms are left alone on purpose: touching them would start
+    # deciding how close a paraphrase has to be, which is a judgement, not a check.
+    assert flatten(raw) == expected
+
+
+def test_a_quote_is_recognised_through_rewrapping_and_recapitalisation() -> None:
+    source = a_source(TENDER_LINE)
+
+    assert source.quotes("All equipment shall be new, unused, and of current manufacture.")
+    assert source.quotes("ALL  EQUIPMENT\n   SHALL BE NEW,\nunused, and of current manufacture.")
+    assert not source.quotes("Every item supplied has to be of a currently made model.")
+
+
+def test_a_finding_that_states_the_obligation_in_its_own_words_matches() -> None:
+    item = a_recovery_item()
+    finding = a_finding("F1", refs=["ITB-G1"])
+    finding = finding.model_copy(
+        update={
+            "recovered_statement": "Catalogue items near end of life are disqualified on age alone."
+        }
+    )
+
+    report = recovery_run(item, finding)
+
+    assert [a.gold_id for a in report.matches] == ["G1"]
+    assert not report.output_misses
+
+
+def test_a_finding_that_only_quotes_the_source_line_scores_output_miss() -> None:
+    # The whole of the claim. A regex can copy a line; copying is retrieval, and the item
+    # asks for the obligation stated, which is not the same act.
+    item = a_recovery_item()
+    finding = a_finding("F1", refs=["ITB-G1"]).model_copy(
+        update={"recovered_statement": TENDER_LINE}
+    )
+
+    report = recovery_run(item, finding)
+
+    assert not report.matches
+    assert [(a.gold_id, a.missing_outputs) for a in report.output_misses] == [
+        ("G1", ["recovered_statement"])
+    ]
+
+
+def test_a_quote_lifted_from_the_middle_of_a_page_is_still_a_quote() -> None:
+    # Containment, not equality: quoting half a clause is quoting.
+    item = a_recovery_item()
+    finding = a_finding("F1", refs=["ITB-G1"]).model_copy(
+        update={"recovered_statement": "shall be new, unused"}
+    )
+
+    report = recovery_run(item, finding)
+
+    assert not report.matches
+
+
+@pytest.mark.parametrize("claimed", [None, "", "   ", "\n\t "])
+def test_an_absent_or_blank_recovered_statement_is_not_a_recovery(claimed: str | None) -> None:
+    item = a_recovery_item()
+    finding = a_finding("F1", refs=["ITB-G1"]).model_copy(update={"recovered_statement": claimed})
+
+    report = recovery_run(item, finding)
+
+    assert not report.matches
+    assert report.output_misses[0].missing_outputs == ["recovered_statement"]
+
+
+def test_recovers_statement_is_the_two_conditions_and_nothing_else() -> None:
+    source = a_source(TENDER_LINE)
+    quoting = a_finding("F1", refs=["ITB-G1"]).model_copy(
+        update={"recovered_statement": TENDER_LINE}
+    )
+    own_words = quoting.model_copy(
+        update={"recovered_statement": "New kit only, nothing near EOL."}
+    )
+    silent = quoting.model_copy(update={"recovered_statement": None})
+
+    assert not recovers_statement(quoting, source)
+    assert recovers_statement(own_words, source)
+    assert not recovers_statement(silent, source)
+
+
+def test_the_recovery_rule_does_not_reach_an_item_that_did_not_ask_for_one() -> None:
+    item = a_gold_item("G1")  # expects_recovered_statement defaults to False
+    finding = a_finding("F1", refs=["ITB-G1"]).model_copy(
+        update={"recovered_statement": TENDER_LINE}
+    )
+
+    report = recovery_run(item, finding)
+
+    assert [a.gold_id for a in report.matches] == ["G1"]
+
+
+def test_scoring_an_item_that_expects_a_recovery_without_a_source_raises() -> None:
+    # Not a silently skipped check. A skipped check is how the claim that a keyword rule
+    # recovers nothing survived a year while being false.
+    gold = [a_recovery_item("G1"), a_recovery_item("G2"), a_gold_item("G3")]
+
+    with pytest.raises(MatcherError) as caught:
+        match_findings([a_finding("F1", refs=["ITB-G1"])], gold)
+
+    message = str(caught.value)
+    assert "G1" in message and "G2" in message
+    assert "2 gold item(s)" in message
+
+
+def test_no_source_is_fine_when_nothing_asks_for_a_recovery() -> None:
+    gold = [a_gold_item("G1")]
+
+    report = match_findings([a_finding("F1", refs=["ITB-G1"])], gold)
+
+    assert [a.gold_id for a in report.matches] == ["G1"]
+
+
+def test_source_text_reads_every_page_of_every_document() -> None:
+    source = a_source("first page text", "second page text", "third page text")
+
+    assert len(source.pages) == 3
+    assert source.quotes("SECOND page   text")
+
+
+def test_the_recovery_requirement_rides_with_the_other_expected_outputs() -> None:
+    item = a_recovery_item("G1", expects_clarification_question=True)
+
+    assert item.expected_outputs == ["clarification_question", "recovered_statement"]

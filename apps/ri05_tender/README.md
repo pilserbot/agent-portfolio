@@ -69,10 +69,13 @@ drawn around whatever the pipeline happened to do. Everything is exercised again
   found. Assignment is one-to-one, ranked by **completeness before overlap** so the
   instrument's own arbitration is never scored as the system's failure, and **greedy by
   definition** rather than by approximation — a published number needs a definition, not an
-  optimum. **No model call anywhere.**
+  optimum. It also enforces that **a recovered obligation is stated in the finding's own
+  words**: a `recovered_statement` that is a verbatim span of any page of the tender scores
+  OUTPUT_MISS, because quoting is retrieval. **No model call anywhere.**
 - **`metrics`** — recall overall, by class, by tier, by severity; severity-weighted
-  (no_bid 8, critical 4, major 2, minor 1); implicit recovery; both precisions; the no-bid
-  gate. Every ratio comes from `spine.eval.metrics` through a thin adapter, never a fork.
+  (no_bid 8, critical 4, major 2, minor 1); UNSTATED and DISPLACED recovery, **separately
+  and never summed**; both precisions; the no-bid gate. Every ratio comes from
+  `spine.eval.metrics` through a thin adapter, never a fork.
 - **`adjudication`** — an unmatched finding is queued for a human, not counted as wrong.
   The key records what was *planted*, not every defect in the package.
 - **`report`** — the score card as markdown, header stating what was scored and what was
@@ -83,7 +86,7 @@ drawn around whatever the pipeline happened to do. Everything is exercised again
   `python -m ri05_tender.eval.baseline data/tenders/<folder> [--check]`; the record lives at
   `evals/results/<tender>_keyword_baseline.json` and CI fails if it drifts.
 
-Two things the design refuses to allow:
+Three things the design refuses to allow:
 
 - **One precision without the other.** `Precisions` has no default for either field, so
   half of it cannot be constructed. Strict counts every unmatched finding against the
@@ -92,6 +95,10 @@ Two things the design refuses to allow:
 - **Passing the no-bid gate on average.** It is True only when *every* scored `no_bid` item
   was fully matched. A bid going out on a tender the system should have refused is not
   offset by finding ninety other things.
+- **A combined recovery figure.** `ScoreCard` has no field to put one in. UNSTATED items are
+  written nowhere in the package and DISPLACED items are written out somewhere nobody looks;
+  reading finds the second and cannot find the first. One ratio over both is an average of
+  two capabilities that moves when the mix changes rather than when the system does.
 
 ### Two guards, both offline, both in the `test` CI job
 
@@ -100,13 +107,38 @@ Two things the design refuses to allow:
   outside `eval` and fails on any reference to the answer key at all, reachable or not — the
   static half, which catches what no test executes. The allowance is **one string literal in
   one file**, written out in the test. Growing it means the guard is being worked around.
-- **The keyword floor.** An implicit-recovery figure means nothing without one, and it is
-  measured in CI rather than asserted in prose.
+- **The keyword floor.** A recovery figure means nothing without one, and it is measured in
+  CI rather than asserted in prose.
 
-> **Open question on the floor.** The keyword rule recovers **20 of 72** IMPLICIT items
-> (27.8%), where it should recover none — an implicit obligation is one the package does not
-> state. Two causes, each shown by a test: some of those items *are* written out as "shall"
-> clauses (TS-1.1 states D4-25's obligation almost verbatim), and the matcher credits a
-> finding for citing the clause an obligation hides in, because `finding_type` is asserted
-> rather than earned. **No implicit-uplift figure should be published until that is
-> settled** — the denominator is not what it claims to be.
+### The floor caught the answer key
+
+The gold set said none of its 72 IMPLICIT items was written as a "shall" statement anywhere
+in the package. The keyword baseline recovered **20 of them**. The claim had been asserted in
+a labelling guide written before the harness existed, and never measured.
+
+**One class was doing two jobs**, and at rev 3 it became two:
+
+| | Items | What it is | What finding it needs |
+|---|---:|---|---|
+| **UNSTATED** | 32 | No requirement sentence exists anywhere — a Bill of Quantities line, a Pricing Schedule row, a scope word in prose | Inference |
+| **DISPLACED** | 40 | Written out as a plain "shall" clause, in a drawing note, an annex or a federal-provisions clause | Reading the whole package |
+
+The split rule — *DISPLACED if the clause its refs point to is itself a "shall" statement* —
+was applied independently to the loader's extracted text and agreed with the hand-made list
+on all 72 items, zero disagreements.
+
+Splitting the class was not enough on its own, because the matcher credited a finding for
+citing the clause an obligation hides in: `finding_type` was asserted rather than earned.
+`expects_recovered_statement` now fixes that, and **both floors re-derive to 0.0** — each for
+a different reason, each pinned by its own test:
+
+- **UNSTATED 0/32 — structural.** No keyword finding anchors a single UNSTATED item, not even
+  as a PARTIAL. There is no sentence to grep.
+- **DISPLACED 0/40 — earned.** The rule still reaches **37 of the 40** on anchor and type.
+  Relax `expects_recovered_statement` and exactly the 20 come back. It fails because it can
+  only quote.
+
+A zero no test can tell apart from a broken harness is not evidence of anything, which is why
+those two tests exist. The full account is in
+`data/tenders/kessler_point/gold/CORRECTION_implicit_class.md`. **No uplift figure on either
+class is publishable until the pipeline exists and is measured against these floors.**
