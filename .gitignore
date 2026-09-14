@@ -33,6 +33,11 @@ htmlcov/
 eval_report.md
 eval_report.json
 
+# Adjudication queues written by ri05_tender.eval.adjudication. A queue a human has ruled
+# on is worth committing; the raw output of every local run is not, so they are ignored by
+# default and added deliberately with `git add -f` once the verdicts are in.
+evals/adjudication/*.jsonl
+
 # Spend ledger written by spine.router
 .spend/
 
