@@ -65,8 +65,11 @@ drawn around whatever the pipeline happened to do. Everything is exercised again
   mistake, not an empty run. Items marked `scored: false` load, are excluded from every
   denominator, and are counted in the report header.
 - **`matcher`** — a finding matches when its normalised refs intersect the item's **and**
-  its type is allowed by **all** of the item's classes. Five outcomes; only MATCH counts as
-  found. Assignment is one-to-one and fully deterministic. **No model call anywhere.**
+  its type is allowed by **all** of the item's classes. Six outcomes; only MATCH counts as
+  found. Assignment is one-to-one, ranked by **completeness before overlap** so the
+  instrument's own arbitration is never scored as the system's failure, and **greedy by
+  definition** rather than by approximation — a published number needs a definition, not an
+  optimum. **No model call anywhere.**
 - **`metrics`** — recall overall, by class, by tier, by severity; severity-weighted
   (no_bid 8, critical 4, major 2, minor 1); implicit recovery; both precisions; the no-bid
   gate. Every ratio comes from `spine.eval.metrics` through a thin adapter, never a fork.

@@ -8,7 +8,8 @@ around whatever the pipeline happened to do. Everything here is exercised agains
   shape the pipeline will emit.
 - `loader` — reads a `TenderPackage`'s answer key, and refuses a tender that has none.
 - `matcher` — decides, deterministically and one-to-one, which findings answer which gold
-  items. No model call anywhere in it.
+  items, ranking candidate pairs by completeness before overlap. Greedy, and defined as
+  greedy so the figure is reproducible. No model call anywhere in it.
 - `metrics` — recall overall and by class, tier and severity; severity-weighted recall;
   implicit recovery; both precisions; the no-bid gate. Every ratio is computed by
   `spine.eval.metrics` through a thin adapter rather than reimplemented here.

@@ -11,33 +11,55 @@ A finding matches a gold item when **both** hold:
    All of them: an item classed ``["IMPLICIT", "COMMERCIAL"]`` is answerable either way, and
    reading only the first would mark a correct finding wrong.
 
-Five outcomes, and only the first counts as found:
+Six outcomes, and only the first counts as found:
 
 - ``MATCH`` — both hold, and every output the item requires is present.
 - ``OUTPUT_MISS`` — both hold, but a required ``expects_*`` output is absent. The defect was
   seen; the work it demanded was not done.
 - ``PARTIAL`` — anchor only. The finding is looking at the right clause and saying the wrong
   thing about it, which is a different failure from not looking.
+- ``DUPLICATE`` — anchors and types onto a gold item another finding was already credited
+  with. Not a candidate new defect: it demonstrably refers to a known one.
 - ``UNMATCHED`` — the finding anchors nothing. Not the same as wrong: see `adjudication`.
 - ``MISS`` — a gold item no finding was credited with.
 
 **Assignment is one-to-one.** One finding cannot satisfy two gold items and one gold item
 cannot be credited to two findings, so a single finding citing two planted defects earns
-credit for one. Competition is resolved by highest anchor overlap, then highest confidence,
-then finding id — the last purely so that identical input always produces an identical
-assignment, which a scoring harness has to.
+credit for one.
 
-One consequence of that ordering is worth knowing about: a candidate that would be
-``OUTPUT_MISS`` outranks one that would be ``MATCH`` if it has the higher overlap or
-confidence, and the item then reads as not found while a finding that fully answered it is
-left over. The rule is the one specified, and it is applied as specified rather than
-quietly improved; `test_the_tiebreak_can_prefer_an_output_miss_over_a_match` pins the
-behaviour so a change to it is visible.
+Candidate pairs are ranked by a total order, **completeness first**:
+
+1. outcome rank — ``MATCH`` before ``OUTPUT_MISS`` before ``PARTIAL``
+2. anchor overlap, descending
+3. confidence, descending
+4. finding id, ascending
+
+Completeness leads because the alternative scores the instrument's own arbitration as the
+system's failure: with overlap first, a finding that anchored two references but omitted a
+required output could take an item away from a finding that answered it completely, and the
+item would read as not found. The system answered correctly and would have been marked
+wrong. Ranks 2 and 3 order genuine competition; rank 4 is not a tiebreak anybody cares
+about on its own — it is there so identical input always produces an identical assignment,
+which a scoring harness has to.
+
+A ``PARTIAL`` pair carries no credit — a finding that anchors a clause without answering it
+has not found anything — so it can never win an assignment. Ranking it last is therefore
+the same as leaving it out of the credit pass, which is what the code does; ``PARTIAL`` is
+settled afterwards, as a residual label.
+
+**Assignment is greedy, and is not a globally optimal bipartite matching.** Taking the
+best-ranked pair at each step can, in principle, credit fewer items overall than an optimal
+assignment would. That is accepted deliberately: **the scoring rule is defined as the
+greedy result over the total order above**, not as "the best assignment obtainable". A
+published number needs a definition, and a definition anyone can re-derive by hand from a
+stated order is worth more here than a figure that is optimal but whose value depends on
+which solver ran.
 
 Deliberately does not: call a model. Nothing in this module asks anything to judge
 similarity — matching is set intersection and dictionary lookup, and that is what makes a
 score reproducible. It also does not decide whether an unmatched finding is wrong; that is
 a human's call, recorded in `adjudication`.
+
 """
 
 import re
@@ -76,7 +98,13 @@ CLASS_TO_FINDING_TYPE: dict[str, str] = {
 
 IMPLICIT_CLASS = "IMPLICIT"
 
-Outcome = Literal["match", "output_miss", "partial", "unmatched", "miss"]
+Outcome = Literal["match", "output_miss", "partial", "duplicate", "unmatched", "miss"]
+
+# Completeness before overlap. A pair that answers an item fully outranks one that answers
+# it incompletely, whatever else is true of either — see the module docstring for why. Only
+# match and output_miss carry credit and so appear in the assignment pool; partial ranks
+# last, which is the same as not competing at all.
+OUTCOME_RANK: dict[str, int] = {"match": 0, "output_miss": 1, "partial": 2}
 
 _WHITESPACE = re.compile(r"\s+")
 _DASHES = re.compile(r"[‐-―−]")
@@ -85,7 +113,9 @@ _HYPHEN_RUN = re.compile(r"-{2,}")
 __all__ = [
     "CLASS_TO_FINDING_TYPE",
     "IMPLICIT_CLASS",
+    "OUTCOME_RANK",
     "Assignment",
+    "Duplicate",
     "MatchReport",
     "MatcherError",
     "Outcome",
@@ -169,6 +199,24 @@ class Partial(BaseModel):
     finding_type: str
 
 
+class Duplicate(BaseModel):
+    """A finding that anchors and types onto a gold item another finding already holds.
+
+    Not a candidate new defect and not sent to adjudication: it demonstrably refers to a
+    known one, and putting it in front of a human would spend the scarcest resource in the
+    loop on a question already answered. It still counts against strict precision, because
+    five variants of one finding is a real problem for whoever has to read them.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    finding_id: str
+    gold_ids: list[str] = Field(
+        min_length=1, description="Items it could have answered, each already credited."
+    )
+    finding_type: str
+
+
 class MatchReport(BaseModel):
     """Every finding and every scored gold item, each placed in exactly one outcome."""
 
@@ -177,6 +225,7 @@ class MatchReport(BaseModel):
     matches: list[Assignment] = Field(default_factory=list)
     output_misses: list[Assignment] = Field(default_factory=list)
     partials: list[Partial] = Field(default_factory=list)
+    duplicates: list[Duplicate] = Field(default_factory=list)
     unmatched: list[str] = Field(default_factory=list, description="Finding ids.")
     misses: list[str] = Field(default_factory=list, description="Gold ids nothing answered.")
 
@@ -189,6 +238,22 @@ class MatchReport(BaseModel):
     def matched_finding_ids(self) -> set[str]:
         """The findings credited with a full match."""
         return {assignment.finding_id for assignment in self.matches}
+
+    @property
+    def strict_denominator(self) -> list[str]:
+        """The findings strict precision is measured over, sorted.
+
+        Matches, plus the findings that were wrong or redundant in a way no human review
+        can excuse: one that cites nothing in the key, and one that restates a defect
+        another finding already reported. An OUTPUT_MISS or a PARTIAL is not here — the
+        finding did identify something real, and its shortfall is counted against recall
+        rather than twice.
+        """
+        return sorted(
+            self.matched_finding_ids
+            | set(self.unmatched)
+            | {duplicate.finding_id for duplicate in self.duplicates}
+        )
 
 
 def match_findings(findings: Sequence[Finding], gold: Sequence[GoldItem]) -> MatchReport:
@@ -227,46 +292,74 @@ def match_findings(findings: Sequence[Finding], gold: Sequence[GoldItem]) -> Mat
     taken_findings = {assignment.finding_id for assignment in assignments}
     taken_gold = {assignment.gold_id for assignment in assignments}
 
-    partials = [
-        Partial(
-            finding_id=finding.finding_id,
-            gold_ids=sorted(anchored[finding.finding_id]),
-            finding_type=finding.finding_type,
-        )
-        for finding in findings
-        if finding.finding_id not in taken_findings and anchored.get(finding.finding_id)
-    ]
-    unmatched = [
-        finding.finding_id
-        for finding in findings
-        if finding.finding_id not in taken_findings and not anchored.get(finding.finding_id)
-    ]
+    # Every item this finding could have answered — anchor and type both held. For a finding
+    # the credit pass did not take, all of these are now held by somebody else: had one been
+    # free, the greedy pass would have taken the pair, since neither side was used.
+    answerable: dict[str, list[str]] = {}
+    for candidate in candidates:
+        answerable.setdefault(candidate.finding_id, []).append(candidate.gold_id)
+
+    partials: list[Partial] = []
+    duplicates: list[Duplicate] = []
+    unmatched: list[str] = []
+    for finding in findings:
+        if finding.finding_id in taken_findings:
+            continue
+        if claimed := answerable.get(finding.finding_id):
+            duplicates.append(
+                Duplicate(
+                    finding_id=finding.finding_id,
+                    gold_ids=sorted(claimed),
+                    finding_type=finding.finding_type,
+                )
+            )
+        elif touched := anchored.get(finding.finding_id):
+            partials.append(
+                Partial(
+                    finding_id=finding.finding_id,
+                    gold_ids=sorted(touched),
+                    finding_type=finding.finding_type,
+                )
+            )
+        else:
+            unmatched.append(finding.finding_id)
 
     return MatchReport(
         matches=[a for a in assignments if a.outcome == "match"],
         output_misses=[a for a in assignments if a.outcome == "output_miss"],
         partials=partials,
+        duplicates=duplicates,
         unmatched=unmatched,
         misses=sorted(gold_id for gold_id in by_id if gold_id not in taken_gold),
     )
 
 
-def _assign_one_to_one(candidates: Sequence[Assignment]) -> list[Assignment]:
-    """Greedily take the strongest candidate pairs, never reusing either side.
+def _rank(candidate: Assignment) -> tuple[int, int, float, str, str]:
+    """The total order candidate pairs compete in. See the module docstring for why.
 
-    Ordered by anchor overlap descending, then confidence descending, then finding id and
-    gold id ascending. The last two are not tiebreaks anybody cares about on their own —
-    they are there so that the same input always produces the same assignment, which a
-    score has to if it is to be compared with yesterday's.
+    Completeness first, then overlap, then confidence, then finding id. Gold id trails it
+    only to make the order total: no two candidates can then compare equal, so the sort is
+    fully determined by the data rather than by the order the pairs happened to be built in.
     """
-    ordered = sorted(
-        candidates,
-        key=lambda a: (-a.anchor_overlap, -a.confidence, a.finding_id, a.gold_id),
+    return (
+        OUTCOME_RANK[candidate.outcome],
+        -candidate.anchor_overlap,
+        -candidate.confidence,
+        candidate.finding_id,
+        candidate.gold_id,
     )
+
+
+def _assign_one_to_one(candidates: Sequence[Assignment]) -> list[Assignment]:
+    """Greedily take the best-ranked candidate pairs, never reusing either side.
+
+    Greedy over `_rank`, and deliberately not a globally optimal matching: the score is
+    *defined* as this result, so that anyone can re-derive it by hand from the stated order.
+    """
     used_findings: set[str] = set()
     used_gold: set[str] = set()
     taken: list[Assignment] = []
-    for candidate in ordered:
+    for candidate in sorted(candidates, key=_rank):
         if candidate.finding_id in used_findings or candidate.gold_id in used_gold:
             continue
         used_findings.add(candidate.finding_id)
