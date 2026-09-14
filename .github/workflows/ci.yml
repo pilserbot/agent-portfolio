@@ -46,6 +46,23 @@ jobs:
       - name: Unit tests
         run: uv run pytest -m "not integration" --cov
 
+      # Both of the steps below are offline, deterministic and secret-free, which is why
+      # they belong here and not in the `eval` job. The unit-test step above already runs
+      # them; they are repeated as named steps so a failure says which guard broke rather
+      # than "some test failed".
+
+      # Static half of the gold-leakage guard: parses every pipeline module and fails on any
+      # reference to the answer key, including in code no test executes. The runtime half is
+      # the audit hook in tests/ri05/test_tender_loader.py.
+      - name: Gold-leakage scan
+        run: uv run pytest tests/ri05/test_no_gold_leakage.py -q
+
+      # The floor an implicit-recovery claim has to clear, recomputed from the committed
+      # tender and compared against the committed record. Fails if a measured figure moved,
+      # which means the extraction or the gold set changed under it. The date is ignored.
+      - name: Keyword baseline is current
+        run: uv run python -m ri05_tender.eval.baseline data/tenders/kessler_point --check
+
   # Integration tests and the evaluation run. Needs secrets, so it is skipped (not failed)
   # whenever they are absent — pull requests from forks, and forks' own pipelines.
   eval:
