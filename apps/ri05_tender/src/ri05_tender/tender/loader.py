@@ -68,7 +68,7 @@ import argparse
 import hashlib
 from collections.abc import Iterator, Sequence
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pdfplumber
 from docx import Document as open_docx
@@ -85,8 +85,13 @@ from ri05_tender.tender.models import (
 )
 
 DOCUMENTS_DIRNAME = "documents"
-GOLD_DIRNAME = "gold"
-GOLD_SET_FILENAME = "gold_set.jsonl"
+
+# The one place in this package that may name the answer key, and it may only be tested for
+# existence. `tests/ri05/test_no_gold_leakage.py` parses every module here and fails on any
+# other reference to it; this single literal is the whole of its allowance. Kept as one
+# constant rather than a directory and a filename so that allowance is one line, and so
+# widening it cannot happen quietly.
+GOLD_SET_RELATIVE_PATH = PurePosixPath("gold/gold_set.jsonl")
 
 # The suffixes this loader can read. Anything else in documents/ stops the load rather than
 # being skipped: the set is closed because adding a format means teaching this module to
@@ -101,8 +106,7 @@ _HASH_CHUNK_BYTES = 1 << 20
 
 __all__ = [
     "DOCUMENTS_DIRNAME",
-    "GOLD_DIRNAME",
-    "GOLD_SET_FILENAME",
+    "GOLD_SET_RELATIVE_PATH",
     "SUFFIX_TO_MEDIA_TYPE",
     "TenderLoadError",
     "load_document",
@@ -350,7 +354,7 @@ def load_tender(folder: Path) -> TenderPackage:
         raise TenderLoadError(
             f"{folder}: has no {DOCUMENTS_DIRNAME}/ folder. A tender is a folder containing "
             f"{DOCUMENTS_DIRNAME}/ (the files the client issued) and optionally "
-            f"{GOLD_DIRNAME}/ (an answer key)."
+            f"{GOLD_SET_RELATIVE_PATH.parent}/ (an answer key)."
         )
 
     paths = _document_paths(documents_dir, folder)
@@ -359,7 +363,7 @@ def load_tender(folder: Path) -> TenderPackage:
             f"{folder}: {DOCUMENTS_DIRNAME}/ is empty. There is nothing to bid on."
         )
 
-    gold_file = folder / GOLD_DIRNAME / GOLD_SET_FILENAME
+    gold_file = folder / GOLD_SET_RELATIVE_PATH
     has_gold = gold_file.is_file()
 
     return TenderPackage(

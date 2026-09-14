@@ -78,6 +78,11 @@ drawn around whatever the pipeline happened to do. Everything is exercised again
 - **`report`** — the score card as markdown, header stating what was scored and what was
   excluded, and the gate as its own PASS/FAIL line.
 
+- **`baseline`** — the keyword floor. Every line containing "shall", scored through the
+  same loader and the same matcher as a real run, so the comparison is like for like.
+  `python -m ri05_tender.eval.baseline data/tenders/<folder> [--check]`; the record lives at
+  `evals/results/<tender>_keyword_baseline.json` and CI fails if it drifts.
+
 Two things the design refuses to allow:
 
 - **One precision without the other.** `Precisions` has no default for either field, so
@@ -87,3 +92,21 @@ Two things the design refuses to allow:
 - **Passing the no-bid gate on average.** It is True only when *every* scored `no_bid` item
   was fully matched. A bid going out on a tender the system should have refused is not
   offset by finding ninety other things.
+
+### Two guards, both offline, both in the `test` CI job
+
+- **Gold leakage.** `tests/ri05/test_tender_loader.py` watches every file the process opens
+  during a load — the runtime half. `tests/ri05/test_no_gold_leakage.py` parses every module
+  outside `eval` and fails on any reference to the answer key at all, reachable or not — the
+  static half, which catches what no test executes. The allowance is **one string literal in
+  one file**, written out in the test. Growing it means the guard is being worked around.
+- **The keyword floor.** An implicit-recovery figure means nothing without one, and it is
+  measured in CI rather than asserted in prose.
+
+> **Open question on the floor.** The keyword rule recovers **20 of 72** IMPLICIT items
+> (27.8%), where it should recover none — an implicit obligation is one the package does not
+> state. Two causes, each shown by a test: some of those items *are* written out as "shall"
+> clauses (TS-1.1 states D4-25's obligation almost verbatim), and the matcher credits a
+> finding for citing the clause an obligation hides in, because `finding_type` is asserted
+> rather than earned. **No implicit-uplift figure should be published until that is
+> settled** — the denominator is not what it claims to be.

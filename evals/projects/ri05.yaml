@@ -1,0 +1,161 @@
+# RI-05, the tender response engine.
+#
+# EVERY TARGET IS UNSET. Not zero, not a placeholder — `target: null`, which
+# `spine.kpi.KPISpec` reads as "this project reports the metric and has not yet decided what
+# good looks like". `compute_kpis` refuses to measure a metric with no target rather than
+# inventing one, so this config declares the instrument without pretending to a standard.
+#
+# A target here would be a number somebody made up. The pipeline does not exist yet, the
+# keyword baseline in evals/results/kessler_point_keyword_baseline.json is the only measured
+# figure on this project, and it says the implicit-recovery denominator is not yet what it
+# claims to be. Setting targets before that is settled would be setting them against a
+# metric nobody trusts.
+project: ri05
+description: >-
+  Tender response engine: read a tender package, find the defects a presale engineer would
+  have to find by hand, and produce the artefacts each one demands. Scored by
+  ri05_tender.eval against a labelled tender's answer key.
+gold_set: example
+
+kpis:
+  project: ri05
+
+  # No cassette-served run has been scored on this project, and none should be counted if
+  # one is: a demo's cost is not this project's cost.
+  include_replayed_cost: false
+
+  # The two figures the project stands or falls on. Recall of the defects a human would
+  # have caught, and the money it took to get them.
+  headline:
+    - recall_overall
+    - cost_per_run
+
+  kpis:
+    - name: recall_overall
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: test
+      computation: accuracy
+      tolerance: 0.02
+      description: >-
+        Share of scored gold items fully matched. Only MATCH counts: a finding that saw the
+        defect but did not produce the output it demanded is not a find.
+
+    - name: recall_weighted
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: test
+      computation: mean_score
+      tolerance: 0.02
+      description: >-
+        Recall with each item counted by what missing it would cost — no_bid 8, critical 4,
+        major 2, minor 1. Reported beside the unweighted figure because the same hit rate
+        means different things depending on which items were missed.
+
+    - name: recall_cold_start
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: test
+      computation: precision
+      positive_label: "yes"
+      tolerance: 0.02
+      description: >-
+        Recall over the cold_start tier: what the system finds with no configuration, no
+        company facts and no catalogue. The number a first run on a new tender would give.
+
+    - name: implicit_recovery
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: test
+      computation: recall
+      positive_label: "yes"
+      tolerance: 0.02
+      description: >-
+        Recall over items carrying the IMPLICIT class — obligations the package does not
+        state. Do not publish this without the uplift below beside it.
+
+    - name: implicit_uplift
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: analysis
+      computation: mean_score
+      tolerance: 0.02
+      description: >-
+        Implicit recovery above the keyword baseline in
+        evals/results/kessler_point_keyword_baseline.json. The baseline is measured in CI on
+        the same documents through the same extraction and the same matcher. NOTE: that
+        baseline currently recovers 20 of 72 IMPLICIT items, which it should not be able to
+        do — see tests/ri05/test_scoring_baseline.py. Until that is settled this metric's
+        denominator is unsound and no uplift figure should be published.
+
+    - name: precision_strict
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: test
+      computation: precision
+      positive_label: "yes"
+      tolerance: 0.05
+      description: >-
+        Matches over matches plus unmatched plus duplicate findings. Never reported without
+        precision_adjudicated: quoting either alone is a choice about how flattering the
+        number is.
+
+    - name: precision_adjudicated
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: inspection
+      computation: precision
+      positive_label: "yes"
+      tolerance: 0.05
+      description: >-
+        Matches plus human-confirmed new findings, over all findings. Requires a human to
+        have ruled on the adjudication queue, which is why its method is inspection.
+
+    - name: no_bid_gate
+      unit: ratio
+      target: null # UNSET
+      direction: higher_is_better
+      method: test
+      computation: accuracy
+      tolerance: 0.0
+      description: >-
+        1.0 only when every scored no_bid item was fully matched, 0.0 otherwise. Not a rate
+        and must never be read as one: a bid going out on a tender the system should have
+        refused is not offset by anything else. A target here would be 1.0 and nothing else,
+        which is exactly why it is not written down until the pipeline can be held to it.
+
+    - name: cost_per_run
+      unit: usd
+      target: null # UNSET
+      direction: lower_is_better
+      method: analysis
+      computation: total_cost_usd
+      tolerance: 0.5
+      description: >-
+        Model spend for one pass over one tender package. Refuses to produce a figure at all
+        when the run was served from a cassette — see spine.kpi.cost_basis.
+
+    - name: time_to_first_finding
+      unit: seconds
+      target: null # UNSET
+      direction: lower_is_better
+      method: demonstration
+      computation: mean_latency_ms
+      tolerance: 5.0
+      description: >-
+        How long a presale engineer waits before the first defect appears. Method is
+        demonstration because it is a property of the experience, not of the answer, and it
+        is judged by watching a run rather than by reading a log. NOTE: computed today from
+        mean model-call latency, which is a proxy — the real measurement needs the pipeline
+        to emit findings as it goes, which it cannot yet do.
+
+  # No ROI block. Every rate, volume and hour count would have to be stated here, and none
+  # of them has been measured for this project. An ROI assembled from invented inputs is a
+  # sales slide; see spine.kpi.ROIInputs, which will not build without an assumptions_source.

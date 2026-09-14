@@ -724,3 +724,37 @@ def test_total_cost_reports_the_whole_run_not_a_rate() -> None:
     value = compute_kpis(four_verdicts(), a_run(a_call("0.02"), a_call("0.03")), spec)[0].value
 
     assert value == pytest.approx(0.05)
+
+
+# --- a target nobody has decided yet ------------------------------------------------
+
+
+def test_a_target_may_be_unset_rather_than_invented() -> None:
+    # A project with no evidence yet should say so, not write down a figure it made up.
+    spec = a_spec(target=None)
+
+    assert spec.target is None
+    assert not spec.has_target
+
+
+def test_a_declared_target_reads_as_set() -> None:
+    assert a_spec(target=0.0).has_target  # zero is a decision, not an absence
+
+
+def test_measuring_a_metric_with_no_target_is_refused() -> None:
+    # Rather than substituting one. A snapshot carrying an invented target is worse than no
+    # snapshot: it reads as a standard somebody agreed to.
+    spec = a_spec_set(a_spec(name="undecided", target=None), a_spec(name="decided", target=0.8))
+
+    with pytest.raises(KPIError, match="undecided"):
+        compute_kpis(four_verdicts(), a_run(), spec)
+
+
+def test_the_refusal_names_every_undecided_metric_at_once() -> None:
+    spec = a_spec_set(a_spec(name="alpha", target=None), a_spec(name="beta", target=None))
+
+    with pytest.raises(KPIError) as error:
+        compute_kpis([], a_run(), spec)
+
+    assert "alpha" in str(error.value) and "beta" in str(error.value)
+    assert "UNSET" in str(error.value)

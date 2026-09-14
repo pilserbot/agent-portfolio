@@ -463,7 +463,13 @@ class KPISpec(BaseModel):
 
     name: str = Field(min_length=1)
     unit: str = Field(min_length=1, description='e.g. "ratio", "usd", "count", "hours".')
-    target: float
+    target: float | None = Field(
+        default=None,
+        description="What good looks like. None means UNSET — the project reports this "
+        "metric but has not yet decided the number. Nullable on purpose: a project with no "
+        "evidence yet should say so rather than write down a figure it invented, and a "
+        "measurement against an invented target is worse than no target at all.",
+    )
     direction: Direction
     method: Method = Field(
         description="How the figure is established: test, analysis, inspection or demonstration."
@@ -490,6 +496,11 @@ class KPISpec(BaseModel):
                 f"set positive_label to say which one is positive."
             )
         return self
+
+    @property
+    def has_target(self) -> bool:
+        """Whether somebody has decided what good looks like for this metric."""
+        return self.target is not None
 
     @property
     def needs_roi(self) -> bool:
@@ -647,15 +658,33 @@ def compute_kpis(
             spec.roi.model_copy(update={"automated_model_cost_per_unit_usd": measured})
         )
 
-    snapshots: list[KPISnapshot] = []
+    # Collected rather than filtered so the targets that survive are plain floats: there is
+    # no fallback value further down, because a fallback is exactly the invented number this
+    # refuses to produce.
+    targets: list[float] = []
+    unset: list[str] = []
     for item in spec.kpis:
+        if item.target is None:
+            unset.append(item.name)
+        else:
+            targets.append(item.target)
+    if unset:
+        raise KPIError(
+            f"{', '.join(unset)} declare no target (UNSET), so there is nothing to measure "
+            f"them against. Decide the number in {spec.project}'s config first — this module "
+            f"will not supply one, and a snapshot carrying an invented target is worse than "
+            f"no snapshot."
+        )
+
+    snapshots: list[KPISnapshot] = []
+    for item, target in zip(spec.kpis, targets, strict=True):
         snapshots.append(
             KPISnapshot(
                 project=spec.project,
                 metric_name=item.name,
                 value=_value_of(item, verdicts, run, basis, roi, tags),
                 unit=item.unit,
-                target=item.target,
+                target=target,
                 direction=item.direction,
                 measured_at=at,
                 sample_size=len(verdicts),
