@@ -95,10 +95,10 @@ Three things the design refuses to allow:
 - **Passing the no-bid gate on average.** It is True only when *every* scored `no_bid` item
   was fully matched. A bid going out on a tender the system should have refused is not
   offset by finding ninety other things.
-- **A combined recovery figure.** `ScoreCard` has no field to put one in. UNSTATED items are
-  written nowhere in the package and DISPLACED items are written out somewhere nobody looks;
-  reading finds the second and cannot find the first. One ratio over both is an average of
-  two capabilities that moves when the mix changes rather than when the system does.
+- **A combined recovery figure.** `ScoreCard` has no field to put one in. No obligation is
+  written anywhere for an UNSTATED item, while a DISPLACED one is written out somewhere nobody
+  looks; reading finds the second and cannot find the first. One ratio over both is an average
+  of two capabilities that moves when the mix changes rather than when the system does.
 
 ### Two guards, both offline, both in the `test` CI job
 
@@ -120,7 +120,7 @@ a labelling guide written before the harness existed, and never measured.
 
 | | Items | What it is | What finding it needs |
 |---|---:|---|---|
-| **UNSTATED** | 32 | No requirement sentence exists anywhere — a Bill of Quantities line, a Pricing Schedule row, a scope word in prose | Inference |
+| **UNSTATED** | 32 | **No obligation is written anywhere.** Two shapes: a priced line item implying scope (29), or a declarative scope statement whose duty is left to the reader (3) | Construction — both shapes score the same way because both require the obligation to be built |
 | **DISPLACED** | 40 | Written out as a plain "shall" clause, in a drawing note, an annex or a federal-provisions clause | Reading the whole package |
 
 The split rule — *DISPLACED if the clause its refs point to is itself a "shall" statement* —

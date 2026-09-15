@@ -53,7 +53,7 @@ Each document is provided in **PDF** (the issued form, with page numbers for sou
 | Bill of Quantities line items | 103 across 9 systems |
 | **Planted defects** | **187** (199 class labels) |
 | ~~Of which are implicit — no "shall" statement anywhere~~ | ~~**72 (38.5%)**~~ |
-| → Of which are **UNSTATED** — no requirement sentence exists anywhere in the package | **32 (17.1%)** |
+| → Of which are **UNSTATED** — **no obligation is written anywhere** in the package; it has to be constructed, from a priced line item implying scope (29) or a declarative scope statement whose duty is left to the reader (3) | **32 (17.1%)** |
 | → Of which are **DISPLACED** — written out as a "shall" clause, in a drawing note, annex or federal-provisions clause | **40 (21.4%)** |
 
 ---

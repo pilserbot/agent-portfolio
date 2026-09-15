@@ -81,10 +81,11 @@ kpis:
       positive_label: "yes"
       tolerance: 0.02
       description: >-
-        Recall over the 32 UNSTATED items — obligations no sentence in the package states,
-        living in a Bill of Quantities line, a Pricing Schedule row or a scope word buried in
-        prose. Nothing to retrieve; the obligation has to be inferred. Do not publish without
-        unstated_uplift beside it.
+        Recall over the 32 UNSTATED items — obligations written nowhere in the package, in
+        either of two shapes: a priced line item implying scope (29), or a declarative scope
+        or applicability statement whose duty is left to the reader (3). Nothing to retrieve;
+        the obligation has to be constructed, which is why both shapes score the same way. Do
+        not publish without unstated_uplift beside it.
 
     - name: displaced_recovery
       unit: ratio

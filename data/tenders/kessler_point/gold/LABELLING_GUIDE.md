@@ -4,7 +4,7 @@
 
 The gold set is the answer key. This document says what a label means, how an emitted finding is matched to a label, and how the KPIs are computed from those matches. It is written before any measurement is taken, so the numbers cannot be defined after the fact to suit the result.
 
-> **Amended at rev 3.** The IMPLICIT class was wrong and has been split into UNSTATED (32) and DISPLACED (40). The claim in §1 and §4 that a "shall" search recovers none of the 72 was asserted here, never measured, and is false — a "shall" grep recovered 20 of them. Every superseded passage below is struck through rather than deleted, so this document reads as what it is: a contract written before the measurement, corrected by it. The full account is in **`CORRECTION_implicit_class.md`** beside this file.
+> **Amended at rev 3.** The IMPLICIT class was wrong and has been split into UNSTATED (32) and DISPLACED (40) — the test is whether **an obligation is written anywhere**, not whether a requirement sentence exists. The claim in §1 and §4 that a "shall" search recovers none of the 72 was asserted here, never measured, and is false — a "shall" grep recovered 20 of them. Every superseded passage below is struck through rather than deleted, so this document reads as what it is: a contract written before the measurement, corrected by it. The full account is in **`CORRECTION_implicit_class.md`** beside this file.
 
 ---
 
@@ -15,7 +15,9 @@ The gold set is the answer key. This document says what a label means, how an em
 | Gold items | **187** (186 scored — see `REVIEW_ROUND_1.md`) |
 | Class labels across them | **199** (many items carry two) |
 | ~~Implicit — no "shall" statement anywhere~~ **Withdrawn at rev 3** | ~~**72 (38.5%)**~~ |
-| → **UNSTATED** — no requirement sentence exists anywhere in the package | **32 (17.1%)** |
+| → **UNSTATED** — **no obligation is written anywhere** in the package; it has to be constructed | **32 (17.1%)** |
+| → → as a priced line item implying scope (27 Bill of Quantities, 2 Pricing Schedule) | 29 |
+| → → as a declarative scope or applicability statement whose duty is left to the reader | 3 |
 | → **DISPLACED** — written out as a "shall" clause, in a drawing note, annex or federal-provisions clause | **40 (21.4%)** |
 | Cold-start detectable — documents alone | **176** |
 | Needing client data for the full finding | **11** |
@@ -37,6 +39,23 @@ Files:
 | `gold_set.yaml` | The same records, readable and editable. |
 | `GOLD_SET_REVIEW_rev2.xlsx` | Review workbook — now carries each item's review status and a fresh verdict column for round 2. |
 | `LABELLING_GUIDE.md` | This document. |
+
+---
+
+## 1a. What UNSTATED means — sharpened at rev 3
+
+**UNSTATED: no obligation is written anywhere in the package.** Not "no requirement sentence exists" — that phrasing was too narrow, and it made the boundary turn on whether a sentence happened to be present rather than on whether a duty was ever written down. A page can carry a perfectly well-formed sentence and still leave the obligation unwritten.
+
+It covers two shapes:
+
+| Shape | Items | What the package gives you | What is missing |
+|---|---:|---|---|
+| **A priced line item implying scope** | **29** | A Bill of Quantities line, or a priced system or cost category in the Pricing Schedule — a noun phrase, a unit, a quantity. *"A.07 Anti-climb collar to detector post · No · 820"* | Everything a duty is made of. Nobody wrote that 820 collars are to be supplied and fitted; the scheduling of a priced quantity is all there is. |
+| **A declarative scope or applicability statement whose duty is left to the reader** | **3** | A grammatical sentence that states a fact about the contract. *"IF-5.4 The AIS receiver is within the scope of this Contract."* | The duty itself. Being in scope is a fact; what must be supplied, integrated, tested and handed over because of it is never written. |
+
+The three of the second shape are **D5-08 (IF-5.4)**, **D11-01 (B-1.3)** and **D12-01 (C-1.2)**. They were flagged for a second reader precisely because a sentence *does* exist for them; this is that reader's answer, and it is that they belong with the other 29.
+
+**Both shapes require the obligation to be constructed, which is why they score the same way.** A quantity and a scope declaration are different kinds of clue, but neither can be found by reading a duty off the page, because no duty is on the page. What separates UNSTATED from DISPLACED is not how hard the text is to find — DISPLACED text can be buried three annexes deep — but whether, once found, it *states the obligation*. DISPLACED text does. UNSTATED text does not exist to be found.
 
 ---
 
@@ -194,7 +213,9 @@ The 37 high-priority rows, in this order:
 
 The remaining 150 are mostly UNSTATED items from the Bill of Quantities and DISPLACED ones from the drawing register and the annexes, all graded `minor` and all cold-start. Spot-check fifteen and accept the rest.
 
-**Added at rev 3 — the split itself needs a reviewer.** The 32/40 division was made by one rule: an item is DISPLACED if the clause its refs point to is itself written as a "shall" statement, and UNSTATED otherwise. The rule was applied independently to the loader's extracted text and agreed with the hand-made list on all 72, zero disagreements. What a second reader is still needed for is whether the *rule* is the right one — three UNSTATED items (IF-5.4, B-1.3, C-1.2) are clauses that state a fact rather than impose a duty, and whether "no duty is written" or "no sentence exists" is the class boundary is a judgement, not a measurement.
+**Added at rev 3 — the split, and the boundary question it raised.** The 32/40 division was made by one rule: an item is DISPLACED if the clause its refs point to is itself written as a "shall" statement, and UNSTATED otherwise. The rule was applied independently to the loader's extracted text and agreed with the hand-made list on all 72, zero disagreements.
+
+What was referred to a second reader was whether *the rule* is the right one — three UNSTATED items (IF-5.4, B-1.3, C-1.2) resolve to clauses that state a fact rather than impose a duty, so "no sentence exists" and "no duty is written" part company on them. **Answered: the boundary is the obligation, not the sentence.** See §1a. Nothing in the labelling moves; the class now says what it always meant.
 
 ---
 

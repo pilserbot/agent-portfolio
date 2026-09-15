@@ -123,12 +123,14 @@ CLASS_TO_FINDING_TYPE: dict[str, str] = {
     "BUDGET": "budget_variance",
 }
 
-# The two halves of the old IMPLICIT class. UNSTATED: no requirement sentence for it exists
-# anywhere in the package — it lives in a Bill of Quantities line, a Pricing Schedule row, or
-# a scope word buried in prose. DISPLACED: it is written out as a plain "shall" clause, but
-# in a drawing note, an annex or a federal-provisions clause where a requirements review
-# never goes. Recovery over the two is reported separately and never summed: a rule that can
-# read is enough for one of them and cannot touch the other.
+# The two halves of the old IMPLICIT class. UNSTATED: no obligation is written anywhere in
+# the package, so it has to be constructed — from a priced line item implying scope, or from
+# a declarative scope statement whose duty is left to the reader. DISPLACED: the obligation
+# is written out as a plain "shall" clause, but in a drawing note, an annex or a
+# federal-provisions clause where a requirements review never goes. The boundary is whether
+# the text, once found, states the obligation — not how hard it was to find. Recovery over
+# the two is reported separately and never summed: a rule that can read is enough for one of
+# them and cannot touch the other.
 UNSTATED_CLASS = "UNSTATED"
 DISPLACED_CLASS = "DISPLACED"
 

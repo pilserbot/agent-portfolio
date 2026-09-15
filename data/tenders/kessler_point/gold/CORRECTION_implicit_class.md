@@ -46,8 +46,29 @@ not the same problem:
 
 | | What it is | Why it is missed | What finding it needs |
 |---|---|---|---|
-| **UNSTATED** | No requirement sentence for it exists anywhere in the package. It lives in a Bill of Quantities line item, a Pricing Schedule row, or a scope word buried in prose. | There is nothing to read. | Inference — the obligation has to be derived from a quantity, a row, or an omission. |
+| **UNSTATED** | **No obligation is written anywhere** in the package. | There is no duty to read. | Inference — the obligation has to be **constructed**. |
 | **DISPLACED** | Written out plainly as a "shall" clause — but in a drawing note, an annex, or a federal-provisions clause. | A requirements review never goes there. | Reading — of the whole package rather than of Documents 4, 5 and 6. |
+
+### UNSTATED is "no obligation is written", not "no sentence exists"
+
+The first draft of this note said *no requirement sentence exists anywhere*. That is too
+narrow, and it puts the boundary in the wrong place: on whether a sentence happens to be
+present, rather than on whether a duty was ever written down. A page can carry a perfectly
+well-formed sentence and still leave the obligation unwritten.
+
+Sharpened, UNSTATED covers **two shapes**:
+
+| Shape | Items | What the package gives you | What is missing |
+|---|---:|---|---|
+| **A priced line item implying scope** | **29** | A Bill of Quantities line, or a priced system or cost category in the Pricing Schedule — a noun phrase, a unit, a quantity. *"A.07 Anti-climb collar to detector post · No · 820"* | Everything a duty is made of. Nobody wrote that 820 collars are to be supplied and fitted; the scheduling of a priced quantity is all there is. |
+| **A declarative scope or applicability statement whose duty is left to the reader** | **3** | A grammatical sentence stating a fact about the contract. *"IF-5.4 The AIS receiver is within the scope of this Contract."* | The duty itself. Being in scope is a fact; what must be supplied, integrated, tested and handed over because of it is never written. |
+
+**Both shapes require the obligation to be constructed, which is why they score the same
+way.** A priced quantity and a scope declaration are different kinds of clue, and neither
+can be answered by reading a duty off the page, because no duty is on the page. What
+separates UNSTATED from DISPLACED is not how hard the text is to find — DISPLACED text can
+sit three annexes deep — but whether, once found, it *states the obligation*. DISPLACED text
+does. UNSTATED text does not exist to be found.
 
 Averaging them produced a figure that moved when the mix changed rather than when the
 system did, and hid the fact that a one-line regex clears the whole of one half.
@@ -66,12 +87,20 @@ The 32 UNSTATED:
 
 > D5-08, D7-02 … D7-28 (all 27), D8-03, D8-04, D11-01, D12-01
 
-Twenty-seven of them are Bill of Quantities line items; two are Pricing Schedule structures
-(`System J tab`, `Summary rows 24–27`) whose `refs` are not clause references at all, so the
-rule reaches UNSTATED for them by there being no clause to inspect. The other three —
-IF-5.4, B-1.3, C-1.2 — are clauses that state a fact rather than impose a duty
-("The AIS receiver is within the scope of this Contract"), and the obligation that follows
-from the fact is nowhere written.
+**29 of them are of the first shape** — 27 Bill of Quantities line items, plus two Pricing
+Schedule structures (`System J tab`, a priced system Document 4 never specifies;
+`Summary rows 24–27`, four priced cost categories the tender never scopes). Their `refs` are
+not clause references at all, so the split rule reaches UNSTATED for them by there being no
+clause to inspect — the same answer the sharpened definition gives directly.
+
+**The other three are of the second shape** — D5-08 (IF-5.4), D11-01 (B-1.3), D12-01 (C-1.2).
+These were flagged for a second reader, because a sentence *does* exist for them and the
+split rule reached UNSTATED only because that sentence carries no "shall". **This is that
+reader's answer: they belong with the other 29.** Each states a fact and leaves the duty to
+be constructed — that the AIS receiver is in scope, that a sixty-standard annex binds whether
+or not Document 4 cites it, that five documents of the solicitation are themselves SSI. The
+consequence in each case is unwritten. Nothing in the labelling moves; the class boundary is
+now stated as what it always meant.
 
 The other **40 are DISPLACED**, which is exactly the count expected. Every one of the 20
 items the keyword rule recovered falls in this half.

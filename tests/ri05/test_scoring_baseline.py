@@ -130,11 +130,12 @@ def test_the_keyword_baseline_recovers_nothing_on_either_class(record: BaselineR
     """Both floors are 0.0. The two tests after this one are what make that mean something."""
     assert record.unstated_recovered == EXPECTED_UNSTATED_RECOVERED, (
         f"The keyword baseline recovers {record.unstated_recovered} of "
-        f"{record.unstated_items} UNSTATED items. It should reach none: an UNSTATED "
-        f"obligation has no requirement sentence anywhere in the package, so a rule that "
-        f"searches sentences cannot produce a candidate for one. A non-zero figure here "
-        f"means the UNSTATED labelling is wrong for {', '.join(record.unstated_recovered_ids)} "
-        f"— settle that before publishing any unstated-uplift figure."
+        f"{record.unstated_items} UNSTATED items. It should reach none: no obligation is "
+        f'written anywhere for an UNSTATED item, so no "shall" clause states one and a rule '
+        f'that collects "shall" sentences has nothing to collect. A non-zero figure here '
+        f"means the UNSTATED labelling is wrong for "
+        f"{', '.join(record.unstated_recovered_ids)} — settle that before publishing any "
+        f"unstated-uplift figure."
     )
     assert record.displaced_recovered == EXPECTED_DISPLACED_RECOVERED, (
         f"The keyword baseline recovers {record.displaced_recovered} of "

@@ -85,10 +85,11 @@ def render_markdown(result: ScoreCard) -> str:
         "every defect in the package: strict counts every unmatched finding against the "
         "system, adjudicated counts only the ones a human called wrong.",
         "",
-        "UNSTATED and DISPLACED recovery are two rows and never one. UNSTATED items are "
-        "written nowhere in the package; DISPLACED items are written out plainly, in a "
-        "drawing note or an annex nobody reads. Reading finds the second and cannot find "
-        "the first, so an average over both says less the more it moves.",
+        "UNSTATED and DISPLACED recovery are two rows and never one. No obligation is "
+        "written anywhere for an UNSTATED item, so it has to be constructed; a DISPLACED "
+        "obligation is written out plainly, in a drawing note or an annex nobody reads. "
+        "Reading finds the second and cannot find the first, so an average over both says "
+        "less the more it moves.",
         "",
         "### Recall by severity",
         "",

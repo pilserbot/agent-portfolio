@@ -20,7 +20,8 @@ Three things this module refuses to let a caller do:
 - **Add UNSTATED recovery to DISPLACED recovery.** There is no combined figure and there is
   no field to put one in. The two used to be one class, IMPLICIT, and summing them is what
   hid the difference: finding an obligation that is written out somewhere nobody looks is a
-  reading problem, and finding one that is written nowhere is an inference problem. A single
+  reading problem, and finding one that is written nowhere at all is a construction problem.
+  A single
   ratio over both is an average of two different capabilities, and it moves when the mix
   changes rather than when the system does.
 
@@ -166,8 +167,9 @@ class ScoreCard(BaseModel):
     unstated_recovery: float = Field(
         ge=0.0,
         le=1.0,
-        description="Recall over items no sentence in the package states. Nothing to read; "
-        "the obligation has to be inferred from a quantity, a row or a scope word.",
+        description="Recall over items no obligation is written for anywhere. Nothing to "
+        "read off the page; the obligation has to be constructed — from a priced line item "
+        "implying scope, or from a declarative scope statement whose duty is left unsaid.",
     )
     unstated_total: int = Field(ge=0)
     displaced_recovery: float = Field(
