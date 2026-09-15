@@ -50,6 +50,56 @@ a document silently missing is a document nobody bid on.
 No model call, no network, no interpretation. It turns files into text with the page
 numbers kept, hashes each file so a change is visible, and stops there.
 
+## `ri05_tender.extract` — wiring `req_core` to this tender
+
+`req_core` knows what a requirement is. This package knows what *this* client calls one.
+
+- **`config`** — the clause style and the modality policy, both quoted from the tender. The
+  policy is the case the design exists for: **ITB-2.1 says `will` is optional and `should`
+  is treated the same way**, which is the opposite of the ordinary reading. Read under
+  `req_core`'s default policy, every clause in the package still gets a modality — the wrong
+  one, silently. The clause style matters for a duller reason: `req_core`'s default also
+  matches a bare `4.7.1`, which in these documents is a section heading, and several of them
+  collide across documents.
+- **`gate`** — build the extraction corpus from Documents 4, 5 and 6, run the pass, and
+  compare the result against Document 9.
+
+### The gate: measured without writing a new gold set
+
+Writing an answer key for requirement extraction means a person transcribing three hundred
+clause numbers, and the result measures that person's afternoon. The tender already contains
+the index — the Compliance Matrix lists every requirement the Authority believes it wrote —
+so the gate compares what extraction found against what the Authority indexed.
+
+**Document 9 is not read during extraction, and that is enforced twice.** `SourceCorpus`
+refuses to be constructed holding a document named in its own `withheld` set, so the mistake
+is not representable rather than merely discouraged; and `verify_scope` re-checks on the way
+out that no anchor cites a document the corpus never held. The matrix is opened only by
+`matrix_clause_ids`, called after extraction has returned a frozen result it cannot feed back
+into.
+
+**What it found**, on the committed package — each one opened and read on the page before
+being written down:
+
+| | |
+|---|---|
+| Clauses in Documents 4/5/6 | **301** (the package's own index says 301) |
+| Rows in the matrix carrying a reference | **299** |
+| Agreed by both sides | **298** |
+| In the documents, absent from the matrix | **3** — `TS-1.5`, `TS-B.25`, `TS-E.4` |
+| In the matrix, absent from the documents | **1** — `TS-B.72` |
+
+The three the matrix omits are real clauses a bidder is never asked to respond to: TS-1.5,
+the declaration of manufacturing origin that makes Section 889 enforceable; TS-B.25, the
+eighty-pixels-per-metre requirement, the hardest thing in the package to demonstrate; and
+TS-E.4, a crash-gate cycle time. TS-B.72 is the other direction — a row demanding YES or NO
+against a requirement whose text exists only on the form.
+
+The gate does not say which side is wrong, because it cannot: a disagreement is either a
+defect in the tender or a bug in segmentation, and they look identical from here. It prints
+both lists in full and a human reads them. This is why it is worth building this way — it is
+the extraction gate and a defect detector at once.
+
 ## `ri05_tender.eval` — the scoring harness
 
 **The pipeline this measures does not exist yet, and that is deliberate.** The measurement
