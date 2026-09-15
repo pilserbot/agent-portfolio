@@ -38,6 +38,10 @@ eval_report.json
 # default and added deliberately with `git add -f` once the verdicts are in.
 evals/adjudication/*.jsonl
 
+# Ledger snapshots and gate reports written by the live integration tests. Uploaded by CI
+# as a build artifact; a local run's copy is not worth committing.
+.artifacts/
+
 # Spend ledger written by spine.router
 .spend/
 

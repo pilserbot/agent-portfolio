@@ -1669,10 +1669,14 @@ version = "0.1.0"
 source = { editable = "packages/req_core" }
 dependencies = [
     { name = "pydantic" },
+    { name = "spine" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.9" }]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "spine", editable = "packages/spine" },
+]
 
 [[package]]
 name = "requests"

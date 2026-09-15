@@ -14,7 +14,7 @@ model's hands and under test.
 ```
 packages/spine/          shared evaluation, model routing and KPI library  (import: spine)
 packages/req_core/       domain-agnostic requirement extraction            (import: req_core)
-apps/ri05_tender/        tender loading layer + scoring harness            (ri05_tender.*)
+apps/ri05_tender/        tender loading, extraction wiring, scoring harness (ri05_tender.*)
 apps/dashboards/         Streamlit KPI dashboard, config-driven            (kpi_app.py)
 data/tenders/<name>/     one folder per tender: documents/ and an optional gold/
 data/                    seed data and gold sets, committed to the repo

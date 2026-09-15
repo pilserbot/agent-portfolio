@@ -115,9 +115,17 @@ jobs:
         if: steps.guard.outputs.available == 'true'
         run: uv sync --all-packages --locked
 
+      # RI05_FULL_EVAL gates the 301-clause extraction pass, on the same expression that
+      # chooses the full gold set below: a push to main, or a pull request labelled
+      # `full-eval`. Without it the extraction smoke test still runs — one page, one call —
+      # so every pull request proves the wire is connected without paying for a measurement
+      # nobody asked for. `-s` because the pass prints its ledger, and a measurement that
+      # only exists in a downloadable artifact is one nobody reads.
       - name: Integration tests
         if: steps.guard.outputs.available == 'true'
-        run: uv run pytest -m integration
+        env:
+          RI05_FULL_EVAL: ${{ github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'full-eval') }}
+        run: uv run pytest -m integration -s
 
       # The full gold set runs on pushes to main and on pull requests labelled `full-eval`;
       # every other pull request gets a 20-item sample.
@@ -169,4 +177,15 @@ jobs:
           path: |
             eval_report.md
             eval_report.json
+          if-no-files-found: ignore
+
+      # The ledger snapshots the integration tests persist the moment a pass returns. Always
+      # uploaded, including when the job failed: the calls were paid for either way, and the
+      # run that prompted this step threw its measurement away on an assertion.
+      - name: Upload live-run ledgers
+        if: always() && steps.guard.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-run-ledgers
+          path: .artifacts/
           if-no-files-found: ignore
