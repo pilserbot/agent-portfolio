@@ -57,9 +57,10 @@ jobs:
       - name: Gold-leakage scan
         run: uv run pytest tests/ri05/test_no_gold_leakage.py -q
 
-      # The floor an implicit-recovery claim has to clear, recomputed from the committed
-      # tender and compared against the committed record. Fails if a measured figure moved,
-      # which means the extraction or the gold set changed under it. The date is ignored.
+      # The floor an UNSTATED- or DISPLACED-recovery claim has to clear, recomputed from
+      # the committed tender and compared against the committed record. Fails if a measured
+      # figure moved, which means the extraction or the gold set changed under it. The date
+      # is ignored. This step is what caught the gold set's own IMPLICIT labelling.
       - name: Keyword baseline is current
         run: uv run python -m ri05_tender.eval.baseline data/tenders/kessler_point --check
 

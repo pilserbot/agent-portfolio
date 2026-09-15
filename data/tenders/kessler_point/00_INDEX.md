@@ -1,8 +1,10 @@
 # RI-05 — Kessler Point Tender Package
 
-**Solicitation AHPA-2026-IFB-0417 · Rev 1 · 13 September 2026**
+**Solicitation AHPA-2026-IFB-0417 · Rev 1 · 13 September 2026 — gold set amended at rev 3, 14 September 2026**
 
 Synthetic tender package for RI-05, the Tender Response Engine. Invented authority, terminal, vendors and products; quantities and regulatory content derived from published US terminal data and verified primary sources.
+
+> **The implicit count below was withdrawn at rev 3.** The claim that 72 defects have no "shall" statement anywhere was asserted, never measured, and is false: a "shall" grep recovered 20 of them. The class is now UNSTATED (32) and DISPLACED (40). See `gold/CORRECTION_implicit_class.md`.
 
 ---
 
@@ -35,6 +37,7 @@ Each document is provided in **PDF** (the issued form, with page numbers for sou
 | File | Purpose |
 |---|---|
 | `DEFECT_LEDGER.md` | **The gold-set answer key.** 187 planted defects carrying 199 class labels across 19 classes, each with its reference, class, description and the expected RI-05 action. Never ships with the tender. |
+| `gold/CORRECTION_implicit_class.md` | **Why the IMPLICIT class was split at rev 3**, what the false claim was, and what the measurement showed. Read before quoting any recovery figure. |
 | `00_INDEX.md` | This file. |
 
 ---
@@ -49,7 +52,9 @@ Each document is provided in **PDF** (the issued form, with page numbers for sou
 | Rows in the Compliance Matrix | 298 + 1 phantom |
 | Bill of Quantities line items | 103 across 9 systems |
 | **Planted defects** | **187** (199 class labels) |
-| Of which are implicit — no "shall" statement anywhere | **72 (38.5%)** |
+| ~~Of which are implicit — no "shall" statement anywhere~~ | ~~**72 (38.5%)**~~ |
+| → Of which are **UNSTATED** — no requirement sentence exists anywhere in the package | **32 (17.1%)** |
+| → Of which are **DISPLACED** — written out as a "shall" clause, in a drawing note, annex or federal-provisions clause | **40 (21.4%)** |
 
 ---
 
@@ -103,7 +108,8 @@ Verified against primary sources in September 2026.
 ## NEXT
 
 Step 4.4 complete — first-pass gold set at `ri05_gold/` (187 items, 37 flagged for review).
-Step 4.5 — wire the eval harness to `gold_set.jsonl`, add the leakage guard, record the keyword baseline in CI.
+Step 4.5 — wire the eval harness to `gold_set.jsonl`, add the leakage guard, record the keyword baseline in CI. **Done, and it found this package's own labelling wrong** — see the note at the top.
+Step 4.9 — the gold set is at rev 3. No recovery or uplift figure is publishable until the pipeline exists and is measured against the two keyword floors, both currently 0.0.
 
 ---
 

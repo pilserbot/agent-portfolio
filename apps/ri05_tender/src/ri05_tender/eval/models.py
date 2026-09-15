@@ -28,11 +28,17 @@ from spine.contracts import EvidenceRef
 Severity = Literal["no_bid", "critical", "major", "minor"]
 Tier = Literal["cold_start", "configured"]
 
+# How an item that used to carry the single IMPLICIT class was split at rev 3, and nothing
+# else. Closed, because the value is a record of a decision that was made once: a free
+# string here would let a later edit write a third story about what happened.
+Reclassification = Literal["IMPLICIT -> UNSTATED", "IMPLICIT -> DISPLACED"]
+
 __all__ = [
     "Finding",
     "FindingOutputs",
     "GoldItem",
     "GoldReview",
+    "Reclassification",
     "Severity",
     "Tier",
 ]
@@ -85,6 +91,13 @@ class GoldItem(BaseModel):
     expects_split: bool = False
     expects_checklist_entry: bool = False
     expects_no_bid: bool = False
+    expects_recovered_statement: bool = Field(
+        default=False,
+        description="The obligation must be stated back in the finding's own words. Set on "
+        "every item of the UNSTATED and DISPLACED classes, because for those the whole "
+        "task is to say the thing the package does not say plainly. `matcher` enforces it "
+        "against the tender text: a finding that only quotes the source line fails.",
+    )
 
     review_priority: str = "normal"
     review: GoldReview
@@ -100,6 +113,11 @@ class GoldItem(BaseModel):
     dispute: str | None = None
     reviewer_note: str | None = None
 
+    # Set on the 72 items that carried IMPLICIT before rev 3. Kept on the record rather than
+    # only in the correction note, so anyone reading one item can see it was moved and which
+    # way, without having to know a document exists.
+    reclassified_rev3: Reclassification | None = None
+
     @property
     def expected_outputs(self) -> list[str]:
         """The output names a finding must carry to fully satisfy this item."""
@@ -110,6 +128,9 @@ class GoldItem(BaseModel):
             "split_children": self.expects_split,
             "checklist_entry": self.expects_checklist_entry,
             "no_bid": self.expects_no_bid,
+            # Last because it is the one output `FindingOutputs` cannot report on its own:
+            # whether it was produced depends on the tender text, so `matcher` decides it.
+            "recovered_statement": self.expects_recovered_statement,
         }
         return [name for name, required in wanted.items() if required]
 
@@ -165,6 +186,13 @@ class Finding(BaseModel):
     refs: list[str] = Field(default_factory=list)
     severity: Severity
     statement: str = ""
+    recovered_statement: str | None = Field(
+        default=None,
+        description="The obligation stated in the finding's own words, for an item whose "
+        "`expects_recovered_statement` is true. Not on `FindingOutputs` with the rest, "
+        "because whether it counts cannot be read off this record alone — `matcher` tests "
+        "it against the tender text, and a verbatim quote of the source does not count.",
+    )
     evidence: list[EvidenceRef] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     outputs: FindingOutputs = Field(default_factory=FindingOutputs)

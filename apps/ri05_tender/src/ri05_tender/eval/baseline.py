@@ -1,9 +1,15 @@
 """The keyword baseline: what a one-line rule recovers, measured rather than asserted.
 
-An implicit-recovery figure means nothing on its own. "The system recovers 68% of implicit
-requirements" is only interesting against what a rule anyone could write in a minute
-recovers, and that comparison has to be **measured in CI on the same inputs**, not written
-into a README once and left there.
+A recovery figure means nothing on its own. "The system recovers 68% of the obligations the
+package does not state plainly" is only interesting against what a rule anyone could write
+in a minute recovers, and that comparison has to be **measured in CI on the same inputs**,
+not written into a README once and left there.
+
+This module is also the reason the gold set was re-labelled at rev 3. Run against the old
+IMPLICIT class it recovered 20 of 72 items, against a written claim that it would recover
+none — because 40 of those 72 obligations are plain "shall" clauses, merely displaced into
+drawing notes, annexes and federal-provisions text. Two figures are reported now, over the
+two classes that replaced it, and they are never added together.
 
 So this module runs the crudest possible rule — every line containing the word "shall" —
 and scores it through exactly the same machinery the real pipeline will be scored through:
@@ -11,7 +17,9 @@ and scores it through exactly the same machinery the real pipeline will be score
 - the same tender loader, so the baseline reads the same PDFs and worksheets through the
   same extraction code. A baseline that read different input would prove nothing.
 - the same `matcher`, with no special case anywhere for the fact that these findings came
-  from a regex. A baseline scored by a kinder rule is not a baseline.
+  from a regex. A baseline scored by a kinder rule is not a baseline. In particular it is
+  held to the same `expects_recovered_statement` rule as anything else, and a regex can only
+  quote, so it fails that rule on the merits rather than by exemption.
 
 Invoked as::
 
@@ -26,8 +34,8 @@ worth knowing before an uplift figure is published off the old denominator.
 Deliberately does not: call a model, reach a network, or try to be good. It is meant to be
 beaten. Making the rule cleverer would raise the floor the real system is measured against
 and flatter nothing but this file. It also does not decide whether the number it produces
-is acceptable — see `tests/ri05/test_scoring_baseline.py`, where the figure is pinned and
-what it implies is written down.
+is acceptable — see `tests/ri05/test_scoring_baseline.py`, where the figures are pinned and
+what they imply is written down.
 """
 
 import argparse
@@ -39,7 +47,12 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from ri05_tender.eval.loader import load_gold
-from ri05_tender.eval.matcher import IMPLICIT_CLASS, match_findings
+from ri05_tender.eval.matcher import (
+    DISPLACED_CLASS,
+    UNSTATED_CLASS,
+    match_findings,
+    source_text,
+)
 from ri05_tender.eval.metrics import score
 from ri05_tender.eval.models import Finding
 from ri05_tender.tender.loader import load_tender
@@ -49,6 +62,12 @@ DEFAULT_RESULTS_ROOT = Path("evals/results")
 KEYWORD = "shall"
 BASELINE_NAME = "keyword_shall"
 
+# What the rule claims each hit is. A "shall" grep is, by construction, a detector of
+# requirements written as "shall" clauses — which is exactly the DISPLACED class. Claiming
+# `unstated_requirement` instead would be claiming to have read a sentence that does not
+# exist, so the rule makes the strongest claim it honestly can and no more.
+BASELINE_FINDING_TYPE = "displaced_requirement"
+
 # A clause reference as these documents print it: a short uppercase prefix, a hyphen, then a
 # dotted number, optionally with a letter section — TS-B.25, ITB-9.2, CS-1.4, GN-02. Kept
 # deliberately plain: a cleverer extractor would be a better baseline, and the point of a
@@ -56,6 +75,7 @@ BASELINE_NAME = "keyword_shall"
 REFERENCE = re.compile(r"\b[A-Z]{1,4}-[A-Z]?\.?\d+(?:\.\d+)*\b")
 
 __all__ = [
+    "BASELINE_FINDING_TYPE",
     "BASELINE_NAME",
     "DEFAULT_RESULTS_ROOT",
     "KEYWORD",
@@ -78,19 +98,30 @@ class BaselineRecord(BaseModel):
     baseline: str = Field(default=BASELINE_NAME, description="Which rule produced this.")
     keyword: str = Field(default=KEYWORD)
     measured_on: date
+    finding_type: str = Field(default=BASELINE_FINDING_TYPE, description="What each hit claims.")
     hits: int = Field(ge=0, description="Lines containing the keyword; one finding each.")
-    implicit_items: int = Field(ge=0, description="Scored gold items carrying the IMPLICIT class.")
-    implicit_recovered: int = Field(ge=0)
-    implicit_recall: float = Field(
-        ge=0.0, le=1.0, description="The floor an implicit-recovery claim must clear."
+
+    unstated_items: int = Field(ge=0, description="Scored items carrying the UNSTATED class.")
+    unstated_recovered: int = Field(ge=0)
+    unstated_recall: float = Field(
+        ge=0.0, le=1.0, description="The floor an UNSTATED-recovery claim must clear."
     )
+    unstated_recovered_ids: list[str] = Field(default_factory=list)
+
+    displaced_items: int = Field(ge=0, description="Scored items carrying the DISPLACED class.")
+    displaced_recovered: int = Field(ge=0)
+    displaced_recall: float = Field(
+        ge=0.0, le=1.0, description="The floor a DISPLACED-recovery claim must clear."
+    )
+    displaced_recovered_ids: list[str] = Field(
+        default_factory=list,
+        description="Which DISPLACED items the rule reached. Named, not counted: this is the "
+        "half of the old IMPLICIT class a keyword rule has any claim on, so every id here is "
+        "a question to answer before an uplift figure is published.",
+    )
+
     recall_overall: float = Field(ge=0.0, le=1.0)
     precision_strict: float = Field(ge=0.0, le=1.0)
-    recovered_ids: list[str] = Field(
-        default_factory=list,
-        description="Which IMPLICIT items the rule reached. Named, not counted: each one is "
-        "a question about whether that item is implicit at all.",
-    )
 
     def measured(self) -> dict[str, object]:
         """Everything except the date, which is the part a re-run is allowed to change."""
@@ -100,9 +131,11 @@ class BaselineRecord(BaseModel):
 def baseline_findings(package: TenderPackage) -> list[Finding]:
     """One finding per line containing the keyword, citing whatever references that line names.
 
-    The finding type is asserted, not earned: the rule claims every hit is an implicit
-    requirement because that is the subset being baselined. That the matcher takes the claim
-    at face value is a property of the instrument worth knowing, and this is how it shows.
+    `recovered_statement` is the source line itself, because quoting is the most a regex can
+    do — it has no way to say an obligation in other words. The matcher rejects a verbatim
+    quote, so every hit fails the recovery test on the merits. That is the point: the claim
+    "a keyword rule cannot recover an obligation" is now something the harness establishes
+    rather than something a document asserts, and the previous assertion was false.
     """
     findings: list[Finding] = []
     for document in package.documents:
@@ -113,10 +146,11 @@ def baseline_findings(package: TenderPackage) -> list[Finding]:
                 findings.append(
                     Finding(
                         finding_id=f"KW-{document.document_id}-p{page.page_number}-l{number:04d}",
-                        finding_type="implicit_requirement",
+                        finding_type=BASELINE_FINDING_TYPE,
                         refs=REFERENCE.findall(line),
                         severity="minor",
                         statement=line.strip(),
+                        recovered_statement=line.strip(),
                         confidence=0.5,
                     )
                 )
@@ -129,7 +163,7 @@ def measure_baseline(folder: Path, *, on: date | None = None) -> BaselineRecord:
     gold = load_gold(package)
     findings = baseline_findings(package)
 
-    report = match_findings(findings, gold.scored)
+    report = match_findings(findings, gold.scored, source=source_text(package))
     card = score(
         tender_name=package.name,
         gold=gold.scored,
@@ -138,19 +172,26 @@ def measure_baseline(folder: Path, *, on: date | None = None) -> BaselineRecord:
         report=report,
     )
 
-    implicit = {item.id for item in gold.scored if IMPLICIT_CLASS in item.classes}
-    recovered = sorted(implicit & report.matched_gold_ids)
+    def reached(class_name: str) -> list[str]:
+        ids = {item.id for item in gold.scored if class_name in item.classes}
+        return sorted(ids & report.matched_gold_ids)
+
+    unstated, displaced = reached(UNSTATED_CLASS), reached(DISPLACED_CLASS)
 
     return BaselineRecord(
         tender_name=package.name,
         measured_on=on or datetime.now(UTC).date(),
         hits=len(findings),
-        implicit_items=card.implicit_total,
-        implicit_recovered=len(recovered),
-        implicit_recall=card.implicit_recovery,
+        unstated_items=card.unstated_total,
+        unstated_recovered=len(unstated),
+        unstated_recall=card.unstated_recovery,
+        unstated_recovered_ids=unstated,
+        displaced_items=card.displaced_total,
+        displaced_recovered=len(displaced),
+        displaced_recall=card.displaced_recovery,
+        displaced_recovered_ids=displaced,
         recall_overall=card.recall_overall,
         precision_strict=card.precisions.strict,
-        recovered_ids=recovered,
     )
 
 
@@ -216,11 +257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not args.check:
         write_record(fresh, root=args.results_root)
-        print(
-            f"Wrote {path}: {fresh.hits} keyword hit(s), "
-            f"implicit recall {fresh.implicit_recall:.4f} "
-            f"({fresh.implicit_recovered} of {fresh.implicit_items})."
-        )
+        print(f"Wrote {path}: {_summary(fresh)}")
         return 0
 
     committed = BaselineRecord.model_validate_json(path.read_text(encoding="utf-8"))
@@ -235,12 +272,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
 
-    print(
-        f"{path} is current: {fresh.hits} keyword hit(s), "
-        f"implicit recall {fresh.implicit_recall:.4f} "
-        f"({fresh.implicit_recovered} of {fresh.implicit_items})."
-    )
+    print(f"{path} is current: {_summary(fresh)}")
     return 0
+
+
+def _summary(record: BaselineRecord) -> str:
+    """One line naming both floors, never their sum."""
+    return (
+        f"{record.hits} keyword hit(s), "
+        f"UNSTATED recall {record.unstated_recall:.4f} "
+        f"({record.unstated_recovered} of {record.unstated_items}), "
+        f"DISPLACED recall {record.displaced_recall:.4f} "
+        f"({record.displaced_recovered} of {record.displaced_items})."
+    )
 
 
 if __name__ == "__main__":
