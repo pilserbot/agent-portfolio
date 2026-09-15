@@ -27,12 +27,24 @@ UsdAmount = Annotated[
     Field(ge=0, description="Amount in usd. Unformatted; the caller decides presentation."),
 ]
 
+# A step is short-lived: it runs, it ends, or it never ran. It has no mid-flight states,
+# because nothing waits on a step. Deliberately NOT the same vocabulary as `RunStatus`
+# below, and the two have no value in common — "ok" is a step and never a run. See the
+# note on RunStatus for why, and do not merge them.
 StepStatus = Literal["ok", "failed", "skipped"]
 
 # A run is long-lived: it can pause at a human review interrupt for days and resume, so
 # it needs mid-flight states. "skipped" is meaningless for a run and is absent here.
 # "completed_with_errors" exists so a run that finished while a step failed cannot be
 # reported as plain "completed" — see the validator on AgentRun.
+#
+# Deliberately NOT the same vocabulary as `StepStatus`, and deliberately disjoint from it:
+# a run needs "awaiting_review" for the human interrupt and "completed_with_errors" for the
+# partial finish, and a step needs neither. Sharing one enum would mean either giving steps
+# states nothing can put them in, or giving runs an "ok" that cannot distinguish a clean
+# finish from one that carried a failed step. Because the two sets share no value, writing
+# a step status into a run (or the reverse) fails validation immediately rather than being
+# quietly accepted — which is the only reason it is safe for them to sit next to each other.
 RunStatus = Literal[
     "running",
     "awaiting_review",
@@ -79,7 +91,13 @@ class ModelCall(BaseModel):
 
 
 class StepTrace(BaseModel):
-    """One step of a run: what it was, how it ended, and the model calls it made."""
+    """One step of a run: what it was, how it ended, and the model calls it made.
+
+    `status` is a `StepStatus` — "ok", "failed" or "skipped" — and is **not** the same
+    vocabulary as `AgentRun.status`. The two sets are disjoint on purpose: a run pauses for
+    human review and can finish carrying a failed step, and a step does neither. Passing one
+    type's word to the other raises rather than being accepted.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -96,7 +114,14 @@ class StepTrace(BaseModel):
 
 
 class AgentRun(BaseModel):
-    """One end-to-end run of a project's agent, and the steps it took."""
+    """One end-to-end run of a project's agent, and the steps it took.
+
+    `status` is a `RunStatus` — "completed", not "ok" — and is **not** the same vocabulary as
+    `StepTrace.status`. A run needs "awaiting_review" for the human interrupt and
+    "completed_with_errors" for a finish that carried a failed step; a step needs neither,
+    and has "skipped", which is meaningless here. The two sets share no value, so writing a
+    step's word into a run fails validation instead of being quietly accepted.
+    """
 
     model_config = ConfigDict(frozen=True)
 
