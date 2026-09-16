@@ -60,34 +60,44 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
-from req_core.anchors import AnchorReport, verify
-from req_core.clauses import Clause, clauses_on_page
-from req_core.contracts import ExtractionResult
-from req_core.corpus import CorpusPage, SourceCorpus
-from req_core.extraction import (
-    EXTRACT_PURPOSE,
-    PageReading,
-    StructuredCompletion,
-    build_prompt,
-    extract_requirements,
-)
+from req_core.anchors import verify
+from req_core.clauses import clauses_on_page
+from req_core.extraction import EXTRACT_PURPOSE, PageReading, build_prompt, extract_requirements
 from ri05_tender.extract.config import ITB_2_1_POLICY, KESSLER_POINT_CLAUSE_STYLE
 from ri05_tender.extract.gate import (
     MATRIX_DOCUMENT_ID,
-    MatrixComparison,
     compare,
     extraction_corpus,
     render_markdown,
     verify_scope,
 )
 from ri05_tender.tender.loader import load_tender
-from spine.contracts import AgentRun, ModelCall, StepTrace
-from spine.kpi import CostReport, cost_report
+from spine.contracts import AgentRun, StepTrace
+from spine.kpi import cost_report
 from spine.router import Router, RouterConfig
+
+if TYPE_CHECKING:
+    # Names this module only ever writes in an annotation, so they cost nothing at runtime.
+    # Every use of them below is quoted, one at a time, rather than reached by putting
+    # `from __future__ import annotations` at the top of the file: that would stringify the
+    # Pydantic field annotations too, leaving `Decimal` and `datetime` as ForwardRefs that
+    # pydantic resolves through `sys.modules` — which works under pytest's importer and
+    # fails under a loader that does not register the module. This file exists to stop a
+    # paid-for measurement being lost to a construction that raised; it is not the place to
+    # take on a second one.
+    from req_core.anchors import AnchorReport
+    from req_core.clauses import Clause
+    from req_core.contracts import ExtractionResult
+    from req_core.corpus import CorpusPage, SourceCorpus
+    from req_core.extraction import StructuredCompletion
+    from ri05_tender.extract.gate import MatrixComparison
+    from spine.contracts import ModelCall
+    from spine.kpi import CostReport
 
 KESSLER_POINT = Path("data/tenders/kessler_point")
 
@@ -235,7 +245,7 @@ class LedgerSnapshot(BaseModel):
         return "\n".join(lines)
 
 
-def snapshot_of(calls: tuple[ModelCall, ...] | list[ModelCall], *, label: str) -> LedgerSnapshot:
+def snapshot_of(calls: "tuple[ModelCall, ...] | list[ModelCall]", *, label: str) -> LedgerSnapshot:
     """Sum a ledger's calls into a snapshot. Arithmetic only — nothing here can raise."""
     grouped: dict[str, list[ModelCall]] = {}
     for call in calls:
@@ -312,7 +322,7 @@ def a_router(tmp_path: Path) -> Router:
     )
 
 
-def router_completion(router: Router) -> StructuredCompletion:
+def router_completion(router: Router) -> "StructuredCompletion":
     """Bind a router into the `StructuredCompletion` shape `req_core` takes.
 
     This adapter is the whole of the coupling between the extractor and this project's model
@@ -376,7 +386,7 @@ def test_one_live_structured_call_returns_a_valid_typed_result(tmp_path: Path) -
     )
 
 
-def _cheapest_page(corpus: SourceCorpus) -> tuple[CorpusPage, list[Clause]]:
+def _cheapest_page(corpus: "SourceCorpus") -> "tuple[CorpusPage, list[Clause]]":
     """The page with the fewest clauses, so one call is as small as this tender allows.
 
     Ties broken by document then page, so the smoke test asks about the same page every run
@@ -492,11 +502,11 @@ def test_a_real_extraction_pass_anchors_every_requirement_and_clears_the_gate(
 
 
 def _render(
-    result: ExtractionResult,
-    comparison: MatrixComparison,
+    result: "ExtractionResult",
+    comparison: "MatrixComparison",
     run: AgentRun,
-    costs: CostReport,
-    anchors: AnchorReport,
+    costs: "CostReport",
+    anchors: "AnchorReport",
     snapshot: LedgerSnapshot,
 ) -> str:
     """The whole run as one block, for a human reading the test output."""
