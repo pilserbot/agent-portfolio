@@ -16,8 +16,9 @@ would make cost and quality unattributable.
 import json
 import os
 import random
+import re
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -57,6 +58,91 @@ TRANSIENT_ERRORS: tuple[type[Exception], ...] = (
     litellm.InternalServerError,
     litellm.Timeout,
 )
+
+# Faults that will fail identically however many times they are sent. Listed explicitly and
+# checked FIRST, so that a wrapper carrying both a transient link and a fatal one is refused
+# rather than retried: four attempts against a revoked key is four ways to say the same
+# thing slowly, and the useful error is the one that arrives immediately.
+FATAL_ERRORS: tuple[type[Exception], ...] = (
+    litellm.AuthenticationError,
+    litellm.PermissionDeniedError,
+    litellm.NotFoundError,
+    # ContentPolicyViolationError and ContextWindowExceededError both subclass this.
+    litellm.BadRequestError,
+)
+
+# A fence the model wrapped its whole answer in: an opening ``` with an optional language
+# tag on its own line, a body, and a closing ```. Anchored at both ends so it matches only a
+# response that IS one fenced block, never a fence inside a longer answer.
+CODE_FENCE = re.compile(r"\A\s*```[^\n]*\n(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
+
+
+def strip_code_fence(text: str) -> str:
+    """Return the body of a single surrounding markdown fence, or the text unchanged.
+
+    A model asked for JSON sometimes returns it inside ```json … ```. That is a known
+    structured-output failure, it is unambiguous, and reversing it loses nothing: the fence
+    is packaging, not content.
+
+    Deliberately does NOT repair anything else. It does not balance braces, close strings,
+    strip prose around the JSON or pick the largest {...} out of a longer answer. A parser
+    that repairs malformed JSON turns a contract failure into a silent guess about what the
+    model meant, and the failures worth knowing about are exactly the ones it would hide. If
+    the body inside the fence is not valid JSON, it still is not, and validation still fails.
+    """
+    match = CODE_FENCE.match(text)
+    return match.group("body") if match else text
+
+
+def _causes(error: BaseException) -> Iterator[BaseException]:
+    """The exception and every exception it was raised from, outermost first."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def is_retryable(error: BaseException) -> bool:
+    """Whether sending this request again, unchanged, could succeed.
+
+    Looks through wrappers rather than at the outermost type alone. `instructor` catches the
+    provider's exception, exhausts its own validation retries and re-raises
+    `InstructorRetryException` from it — so a 503 arrives at the router wearing a type the
+    retryable set does not list, and a transient provider fault becomes fatal. That is not
+    hypothetical: it killed a full pass mid-run while sixteen other calls on the same key
+    succeeded.
+
+    A fatal link anywhere in the chain wins over a transient one, so a genuine auth failure
+    still fails on the first attempt instead of being sent four times against a dead key.
+    """
+    chain = list(_causes(error))
+    if any(isinstance(link, FATAL_ERRORS) for link in chain):
+        return False
+    return any(isinstance(link, TRANSIENT_ERRORS) for link in chain)
+
+
+def _unfenced(completion_fn: Callable[..., ModelResponse]) -> Callable[..., ModelResponse]:
+    """Wrap a completion function so a fenced answer reaches the validator unwrapped.
+
+    The strip happens here, on the response, rather than inside the schema: every caller of
+    `structured` gets it, no schema has to know about markdown, and the recorded text is the
+    text that was actually validated.
+    """
+
+    def call(*args: object, **kwargs: object) -> ModelResponse:
+        response = completion_fn(*args, **kwargs)
+        for choice in getattr(response, "choices", None) or ():
+            message = getattr(choice, "message", None)
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                unfenced = strip_code_fence(content)
+                if unfenced != content:
+                    message.content = unfenced
+        return response
+
+    return call
 
 
 class RouterError(Exception):
@@ -337,7 +423,7 @@ class Router:
 
         self._guard_spend_cap(model)
         messages = _build_messages(prompt, model=model, cache_prompt=cache_prompt)
-        client = instructor.from_litellm(self._completion_fn, mode=instructor.Mode.JSON)
+        client = instructor.from_litellm(_unfenced(self._completion_fn), mode=instructor.Mode.JSON)
 
         started = time.monotonic()
         obj, response = self._with_backoff(
@@ -408,7 +494,9 @@ class Router:
         for attempt in range(MAX_ATTEMPTS):
             try:
                 return operation()
-            except TRANSIENT_ERRORS as error:
+            except Exception as error:  # noqa: BLE001 - re-raised unless `is_retryable`
+                if not is_retryable(error):
+                    raise
                 last_error = error
                 if attempt == MAX_ATTEMPTS - 1:
                     break

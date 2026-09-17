@@ -28,6 +28,8 @@ from spine.router import (
     RouterConfig,
     SpendCapExceeded,
     calls_by_purpose,
+    is_retryable,
+    strip_code_fence,
 )
 
 AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
@@ -380,6 +382,92 @@ def test_retries_stop_at_the_maximum_and_reraise(tmp_path: Path) -> None:
     assert fake.call_count == MAX_ATTEMPTS
 
 
+def auth_failure() -> litellm.AuthenticationError:
+    return litellm.AuthenticationError(
+        message="invalid x-api-key", llm_provider="anthropic", model=DEFAULT_MODEL_LARGE
+    )
+
+
+def service_unavailable() -> litellm.ServiceUnavailableError:
+    """The exact shape that killed a live pass: a 503 whose text mentions credentials.
+
+    litellm classifies it as ServiceUnavailableError, which is the right call — sixteen
+    other calls on the same key succeeded either side of it. What made it fatal was the
+    wrapper, not the type.
+    """
+    return litellm.ServiceUnavailableError(
+        message="AnthropicException - credential validation failed",
+        llm_provider="anthropic",
+        model=DEFAULT_MODEL_LARGE,
+    )
+
+
+def wrapped(inner: Exception) -> Exception:
+    """`inner`, re-raised from a wrapper the retryable set does not list.
+
+    This is what `instructor` does: it catches the provider's exception, exhausts its own
+    validation retries and raises InstructorRetryException *from* it. A plain RuntimeError
+    stands in for that here so the test pins the unwrapping rather than instructor's type.
+    """
+    outer = RuntimeError("all retry attempts exhausted")
+    # Exactly what `raise outer from inner` sets, built here because this is an expression.
+    outer.__cause__ = inner
+    return outer
+
+
+def test_a_transient_fault_inside_a_wrapper_is_still_retried(tmp_path: Path) -> None:
+    """The fault that killed a full pass: a 503 wearing a type the retry set never listed."""
+    fake = Recorder(wrapped(service_unavailable()), a_response())
+    router = a_router(tmp_path, fake)
+
+    text, _call = router.complete("hi", purpose="extract")
+
+    assert text == "hello"
+    assert fake.call_count == 2
+
+
+def test_an_auth_failure_inside_a_wrapper_still_fails_immediately(tmp_path: Path) -> None:
+    """Unwrapping must not turn a dead key into four attempts against a dead key."""
+    fake = Recorder(*[wrapped(auth_failure()) for _ in range(MAX_ATTEMPTS + 2)])
+    router = a_router(tmp_path, fake)
+
+    with pytest.raises(RuntimeError):
+        router.complete("hi", purpose="extract")
+
+    assert fake.call_count == 1, "an auth failure is answered once, not four times"
+
+
+def test_a_bare_auth_failure_is_not_retried(tmp_path: Path) -> None:
+    fake = Recorder(*[auth_failure() for _ in range(MAX_ATTEMPTS + 2)])
+    router = a_router(tmp_path, fake)
+
+    with pytest.raises(litellm.AuthenticationError):
+        router.complete("hi", purpose="extract")
+
+    assert fake.call_count == 1
+
+
+def test_a_fault_that_is_neither_transient_nor_fatal_is_not_retried(tmp_path: Path) -> None:
+    """An unrecognised error propagates on the first attempt, as it did before unwrapping."""
+    fake = Recorder(*[ValueError("something else entirely") for _ in range(MAX_ATTEMPTS)])
+    router = a_router(tmp_path, fake)
+
+    with pytest.raises(ValueError, match="something else"):
+        router.complete("hi", purpose="extract")
+
+    assert fake.call_count == 1
+
+
+def test_is_retryable_reads_the_whole_chain() -> None:
+    assert is_retryable(service_unavailable()) is True
+    assert is_retryable(wrapped(service_unavailable())) is True
+    assert is_retryable(auth_failure()) is False
+    assert is_retryable(wrapped(auth_failure())) is False
+    assert is_retryable(ValueError("unknown")) is False
+    # A fatal link beats a transient one wherever the two meet.
+    assert is_retryable(wrapped(wrapped(auth_failure()))) is False
+
+
 def test_backoff_waits_grow_and_are_jittered(tmp_path: Path) -> None:
     waits: list[float] = []
     fake = Recorder(rate_limit(), rate_limit(), rate_limit(), a_response())
@@ -482,6 +570,78 @@ def test_structured_gives_up_after_two_retries(tmp_path: Path) -> None:
         router.structured("Extract", Person, purpose="extract")
 
     assert fake.call_count == 3, "one attempt plus two validation retries"
+
+
+# --- fenced JSON ------------------------------------------------------------------------
+#
+# A model asked for JSON sometimes wraps the whole answer in a markdown fence. It is a known
+# structured-output failure and it killed a live pass. The fence is stripped before
+# validation; nothing else about the body is touched, so a body that is not valid JSON must
+# still fail exactly as it did before.
+
+
+def fenced(payload: str, *, tag: str = "") -> ModelResponse:
+    """A response whose entire content is one markdown fence around `payload`."""
+    return a_response(content=f"```{tag}\n{payload}\n```")
+
+
+def test_json_inside_a_bare_fence_still_validates(tmp_path: Path) -> None:
+    fake = Recorder(fenced(json.dumps({"name": "Ada", "age": 36})))
+    router = a_router(tmp_path, fake)
+
+    person, _call = router.structured("Extract", Person, purpose="extract")
+
+    assert (person.name, person.age) == ("Ada", 36)
+    assert fake.call_count == 1, "a fence must not cost a validation retry"
+
+
+def test_json_inside_a_language_tagged_fence_still_validates(tmp_path: Path) -> None:
+    fake = Recorder(fenced(json.dumps({"name": "Ada", "age": 36}), tag="json"))
+    router = a_router(tmp_path, fake)
+
+    person, _call = router.structured("Extract", Person, purpose="extract")
+
+    assert (person.name, person.age) == ("Ada", 36)
+    assert fake.call_count == 1
+
+
+def test_malformed_json_still_fails_even_inside_a_fence(tmp_path: Path) -> None:
+    """The fence is unwrapped; the broken body underneath is not repaired.
+
+    This is the test that keeps the strip honest. A parser that patched up the JSON would
+    make this pass, and would thereby hide every real contract failure behind a guess.
+    """
+    fake = Recorder(*[fenced('{"name": "Ada", "age":') for _ in range(6)])
+    router = a_router(tmp_path, fake)
+
+    with pytest.raises(Exception, match="(?i)retr|json|validation"):
+        router.structured("Extract", Person, purpose="extract")
+
+    assert fake.call_count == 3, "one attempt plus two validation retries, as for any bad body"
+
+
+def test_malformed_json_with_no_fence_is_unchanged_and_still_fails(tmp_path: Path) -> None:
+    fake = Recorder(*[a_response(content='{"name": "Ada", "age":') for _ in range(6)])
+    router = a_router(tmp_path, fake)
+
+    with pytest.raises(Exception, match="(?i)retr|json|validation"):
+        router.structured("Extract", Person, purpose="extract")
+
+    assert fake.call_count == 3
+
+
+def test_strip_code_fence_leaves_everything_that_is_not_one_whole_fence() -> None:
+    """Only a response that IS a fence is unwrapped. Anything else is returned untouched."""
+    assert strip_code_fence('{"a": 1}') == '{"a": 1}'
+    assert strip_code_fence('```json\n{"a": 1}\n```') == '{"a": 1}'
+    assert strip_code_fence('  ```\n{"a": 1}\n```  ') == '{"a": 1}'
+    # A fence around part of a longer answer is not packaging, so it is left alone rather
+    # than having prose silently discarded around it.
+    assert strip_code_fence('Here you go:\n```json\n{"a": 1}\n```') == (
+        'Here you go:\n```json\n{"a": 1}\n```'
+    )
+    # An unterminated fence is not a fence.
+    assert strip_code_fence('```json\n{"a": 1}') == '```json\n{"a": 1}'
 
 
 def test_a_structured_call_is_recorded_in_the_ledger(tmp_path: Path) -> None:
