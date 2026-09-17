@@ -6,6 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "pydantic>=2.9",
+    # For `spine.contracts.EvidenceRef` only — the portfolio's one citation type, so a
+    # requirement extracted here resolves like anything else that cites a source. That module
+    # imports nothing but the standard library and pydantic; no router, client or key is
+    # pulled in, and nothing domain-specific crosses this line.
+    "spine",
 ]
 
 [build-system]
