@@ -131,8 +131,10 @@ class LedgerSnapshot(BaseModel):
             ),
             "reading": "reads with no new writes — served entirely from an existing cache",
             "writing_and_reading": (
-                "both: a prefix was written and later re-read, which is caching doing the "
-                "job it exists for"
+                "both — a prefix was written and later re-read. Whether that is a saving "
+                "depends on why the prefix came round again: reuse across calls is the "
+                "point of caching, but the same page re-sent inside one call is a discount "
+                "on work that should not have happened. The counts do not say which"
             ),
         }
         return (

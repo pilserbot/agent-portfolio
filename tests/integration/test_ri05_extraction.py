@@ -31,29 +31,40 @@ measurement.
 Each test writes its ledger to a temporary path, so a run never walks the project's real
 daily spend cap toward its limit.
 
-**What the prompt cache does on this path is now measured in two halves, not one.**
-`spine.router._build_messages` marks the whole prompt as one cacheable block, but the prompt
-is instructions **plus** that page's clause spans, so the block differs on every call. On
-that reading a prefix cache can never hit, and each call pays the 1.25x write premium for an
-entry nothing will ever read. Moving the marker to the stable half would fix the placement
-and still not cache: the stable half is the instruction block, about 300 tokens, and Claude
-Sonnet 5 will not cache a prefix shorter than 1024. Below the minimum the request does not
-error, it silently does not cache.
+**What the prompt cache does on this path, measured in two halves rather than argued.**
+An earlier version of this docstring claimed caching could not be engaged here and could not
+be made to: `spine.router._build_messages` marks the whole prompt as one cacheable block,
+the prompt is instructions **plus** that page's clause spans, so the block differs on every
+call and nothing can ever hit it. Splitting the counter refuted that. Over the 14-call pass
+the router recorded **57,066 tokens written and 47,473 read** — reads nearly equal to writes,
+not the zero the argument required.
 
-That argument is structural and stands on its own, but the first full pass reported 39,068
-tokens against a single counter that added cache **writes** to cache **reads** — and those
-have opposite cost signs. "Caching is engaged" was read off that counter and is not a
-conclusion it could support. `ModelCall` now carries `cache_creation_tokens` and
-`cache_read_tokens` separately, each from the provider's own field, and `describe_cache()`
-on the snapshot names which of the two happened instead of asserting that caching works.
-Writes with no reads confirms the paragraph above; reads would refute it. Either way the
-number is reported before it is interpreted.
+What was wrong was the unit. The shared *instruction* prefix genuinely cannot cache: it is
+about 300 tokens and Claude Sonnet 5 will not cache a prefix shorter than 1024, silently
+rather than with an error. But the block that is marked is the whole per-page prompt, and
+that block IS re-sent verbatim whenever the same page goes to the model twice — which
+happens on an `instructor` validation retry inside one `structured()` call, and again when a
+second pass runs over the same corpus inside the five-minute TTL. In this run the first three
+calls of the full pass recorded reads with **zero** writes, having been preceded by the
+detection test and the smoke test sending those same pages.
 
-`per_call` exists because the totals hid the thing worth seeing. The first live pass cost
-~$0.89 against a ~$0.25 estimate, and the prompt this module builds accounts for ~1.4k tokens
-a call against ~10.8k measured — a gap neither the instructions nor the response schema
-explains. Per-call rows distinguish "every page cost what its text costs" from "a few pages
-were sent more than once", which summed figures cannot.
+So the reads are real, and they are not the saving the design was hoping for: they are the
+0.1x discount on text that should not have been re-sent at all. The expensive thing on this
+path is the re-sending, not the cache placement. Restructuring the prompt so the stable half
+caches would still not qualify on length, and that half is 300 tokens out of ~5,000 a page.
+
+The figures above are reported before they are interpreted, which is the whole point of
+splitting the field: "caching is engaged" was read off a single counter that added a 1.25x
+surcharge to a 0.1x discount, and no such counter can support a conclusion in either
+direction. `describe_cache()` on the snapshot now names which of the two happened.
+
+`per_call` exists because the totals hid the thing worth seeing, and the split rows settled
+it: on every page whose prompt exceeds ~5k tokens the call records both a write and a read of
+roughly the page's own size, and on every short page it records a write and no read. That is
+the signature of the long pages being sent to the model more than once per `structured()`
+call, which is what the ~1.4k of prompt this module builds against ~10.8k measured was
+always pointing at. Summed figures cannot distinguish "every page cost what its text costs"
+from "a few pages were sent more than once"; these rows can.
 
 Deliberately does not: assert what the model said about any particular clause. How a clause
 should be split is a judgement, and pinning one here would pin today's answer as the
