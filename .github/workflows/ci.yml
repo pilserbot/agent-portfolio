@@ -3,7 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
+  # `labeled` is NOT one of the default pull_request activity types (opened, synchronize,
+  # reopened), so without this list, adding the `full-eval` label to an open pull request
+  # fires an event the workflow ignores, and re-running the last run replays the original
+  # payload — which had no label on it. That is why a labelled pull request kept skipping
+  # the gated jobs. Listing the types means listing all of them: naming only `labeled`
+  # would stop CI running on pushes.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
@@ -188,4 +195,8 @@ jobs:
         with:
           name: live-run-ledgers
           path: .artifacts/
+          # `.artifacts` is a dot directory, and the action skips hidden files by default.
+          # Without this the snapshots were written, printed, and then silently dropped at
+          # upload time — the first full pass logged "No files were found".
+          include-hidden-files: true
           if-no-files-found: ignore

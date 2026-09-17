@@ -22,13 +22,14 @@ from spine.contracts import (
 AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
-def a_call(prompt: int, completion: int, cached: int, cost: str) -> ModelCall:
+def a_call(prompt: int, completion: int, cached: int, cost: str, *, reads: int = 0) -> ModelCall:
     return ModelCall(
         provider="anthropic",
         model="a-model",
         prompt_tokens=prompt,
         completion_tokens=completion,
-        cached_tokens=cached,
+        cache_creation_tokens=cached,
+        cache_read_tokens=reads,
         cost_usd=Decimal(cost),
         latency_ms=120,
         timestamp=AT,
@@ -113,14 +114,20 @@ def every_model() -> list[BaseModel]:
 def test_agent_run_totals_are_summed_from_the_steps() -> None:
     run = a_run(
         [
-            a_step("extract", [a_call(100, 20, 5, "0.001"), a_call(200, 30, 0, "0.002")]),
-            a_step("score", [a_call(50, 10, 7, "0.0005")]),
+            a_step(
+                "extract",
+                [a_call(100, 20, 5, "0.001"), a_call(200, 30, 0, "0.002", reads=40)],
+            ),
+            a_step("score", [a_call(50, 10, 7, "0.0005", reads=60)]),
         ]
     )
 
     assert run.total_prompt_tokens == 350
     assert run.total_completion_tokens == 60
-    assert run.total_cached_tokens == 12
+    # Summed apart, never added together: 12 written is a premium paid and 100 read is a
+    # discount collected, and one number covering both would say neither.
+    assert run.total_cache_creation_tokens == 12
+    assert run.total_cache_read_tokens == 100
     assert run.total_tokens == 410
     assert run.total_cost_usd == Decimal("0.0035")
 

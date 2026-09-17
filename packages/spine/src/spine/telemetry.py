@@ -267,7 +267,10 @@ class LangfuseObservation(Observation):
             fields["usage_details"] = {
                 "input": call.prompt_tokens,
                 "output": call.completion_tokens,
-                "cache_read_input_tokens": call.cached_tokens,
+                # Langfuse takes the provider's own names here, and the provider keeps
+                # the two apart for the same reason this project does.
+                "cache_creation_input_tokens": call.cache_creation_tokens,
+                "cache_read_input_tokens": call.cache_read_tokens,
             }
             fields["cost_details"] = {"total": float(call.cost_usd)}
             metadata["provider"] = call.provider

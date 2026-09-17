@@ -205,7 +205,8 @@ def render_cost(report: CostReport, note: str) -> None:
                     "Calls": usage.calls,
                     "Prompt tokens": usage.prompt_tokens,
                     "Completion tokens": usage.completion_tokens,
-                    "Cached tokens": usage.cached_tokens,
+                    "Cache writes": usage.cache_creation_tokens,
+                    "Cache reads": usage.cache_read_tokens,
                     "Replayed": usage.replayed_calls,
                     "Cost": format_usd(usage.cost_usd) if usage.cost_usd is not None else "—",
                 }

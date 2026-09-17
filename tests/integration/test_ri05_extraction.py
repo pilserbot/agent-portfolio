@@ -31,17 +31,23 @@ measurement.
 Each test writes its ledger to a temporary path, so a run never walks the project's real
 daily spend cap toward its limit.
 
-**Prompt caching is not engaged on this path, and cannot be.** `spine.router._build_messages`
-marks the whole prompt as one cacheable block, but the prompt is instructions **plus** that
-page's clause spans, so the block differs on every call — a prefix cache can never hit on it,
-and each call pays the 1.25x cache-write premium for an entry nothing will read. Moving the
-marker to the stable half would fix the placement and still not cache: the stable half is the
-instruction block, about 300 tokens, and Claude Sonnet 5 will not cache a prefix shorter than
-1024. Below the minimum the request does not error, it silently does not cache. Padding the
-prompt to 1024 tokens of stable text to qualify would mean adding roughly 14k tokens across a
-pass to save on 4.2k of repeated instructions, which costs more than it saves and invents
-content to do it. `caching_engaged` on the snapshot reports the fact each run rather than
-leaving it to be assumed.
+**What the prompt cache does on this path is now measured in two halves, not one.**
+`spine.router._build_messages` marks the whole prompt as one cacheable block, but the prompt
+is instructions **plus** that page's clause spans, so the block differs on every call. On
+that reading a prefix cache can never hit, and each call pays the 1.25x write premium for an
+entry nothing will ever read. Moving the marker to the stable half would fix the placement
+and still not cache: the stable half is the instruction block, about 300 tokens, and Claude
+Sonnet 5 will not cache a prefix shorter than 1024. Below the minimum the request does not
+error, it silently does not cache.
+
+That argument is structural and stands on its own, but the first full pass reported 39,068
+tokens against a single counter that added cache **writes** to cache **reads** — and those
+have opposite cost signs. "Caching is engaged" was read off that counter and is not a
+conclusion it could support. `ModelCall` now carries `cache_creation_tokens` and
+`cache_read_tokens` separately, each from the provider's own field, and `describe_cache()`
+on the snapshot names which of the two happened instead of asserting that caching works.
+Writes with no reads confirms the paragraph above; reads would refute it. Either way the
+number is reported before it is interpreted.
 
 `per_call` exists because the totals hid the thing worth seeing. The first live pass cost
 ~$0.89 against a ~$0.25 estimate, and the prompt this module builds accounts for ~1.4k tokens
