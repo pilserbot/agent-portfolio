@@ -143,7 +143,8 @@ def a_call(cost: str = "0.0031") -> ModelCall:
         model="a-model",
         prompt_tokens=1000,
         completion_tokens=200,
-        cached_tokens=50,
+        cache_creation_tokens=800,
+        cache_read_tokens=50,
         cost_usd=Decimal(cost),
         latency_ms=120,
         timestamp=AT,
@@ -254,7 +255,8 @@ def test_token_counts_and_cost_come_from_the_model_call(recorder: Recorder) -> N
     assert observation.call is call
     assert observation.call.prompt_tokens == 1000
     assert observation.call.completion_tokens == 200
-    assert observation.call.cached_tokens == 50
+    assert observation.call.cache_creation_tokens == 800
+    assert observation.call.cache_read_tokens == 50
     assert observation.call.cost_usd == Decimal("0.0031")
 
 

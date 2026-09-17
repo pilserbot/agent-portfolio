@@ -205,7 +205,8 @@ class PurposeUsage(BaseModel):
     calls: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
-    cached_tokens: int = Field(ge=0)
+    cache_creation_tokens: int = Field(ge=0, description="Written to the cache. A premium.")
+    cache_read_tokens: int = Field(ge=0, description="Served from the cache. The discount.")
     replayed_calls: int = Field(ge=0)
     cost_usd: Decimal | None = Field(default=None, description="Cost for this purpose, in usd.")
 
@@ -273,12 +274,20 @@ def cost_report(run: AgentRun, *, include_replayed: bool = False) -> CostReport:
     for call in calls:
         counters = usage.setdefault(
             call.purpose,
-            {"calls": 0, "prompt": 0, "completion": 0, "cached": 0, "replayed": 0},
+            {
+                "calls": 0,
+                "prompt": 0,
+                "completion": 0,
+                "cache_creation": 0,
+                "cache_read": 0,
+                "replayed": 0,
+            },
         )
         counters["calls"] += 1
         counters["prompt"] += call.prompt_tokens
         counters["completion"] += call.completion_tokens
-        counters["cached"] += call.cached_tokens
+        counters["cache_creation"] += call.cache_creation_tokens
+        counters["cache_read"] += call.cache_read_tokens
         counters["replayed"] += 0 if call.was_billed else 1
         if call.was_billed or include_replayed:
             costs[call.purpose] = costs.get(call.purpose, Decimal("0")) + call.cost_usd
@@ -289,7 +298,8 @@ def cost_report(run: AgentRun, *, include_replayed: bool = False) -> CostReport:
             calls=counters["calls"],
             prompt_tokens=counters["prompt"],
             completion_tokens=counters["completion"],
-            cached_tokens=counters["cached"],
+            cache_creation_tokens=counters["cache_creation"],
+            cache_read_tokens=counters["cache_read"],
             replayed_calls=counters["replayed"],
             cost_usd=costs.get(purpose, Decimal("0")) if basis is not None else None,
         )

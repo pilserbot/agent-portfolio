@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
-    from spine.contracts import ModelCall
+    from spine.contracts import CacheActivity, ModelCall
     from spine.router import Router
 
 # Where a snapshot is written. Durable rather than a pytest tmp_path, because the point of
@@ -48,7 +48,8 @@ class CallRecord(BaseModel):
     model: str
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
-    cached_tokens: int = Field(ge=0)
+    cache_creation_tokens: int = Field(ge=0)
+    cache_read_tokens: int = Field(ge=0)
     cost_usd: Decimal
     latency_ms: int = Field(ge=0)
 
@@ -62,7 +63,8 @@ class PurposeTotals(BaseModel):
     calls: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
-    cached_tokens: int = Field(ge=0)
+    cache_creation_tokens: int = Field(ge=0)
+    cache_read_tokens: int = Field(ge=0)
     cost_usd: Decimal
 
 
@@ -84,21 +86,61 @@ class LedgerSnapshot(BaseModel):
     models: list[str] = Field(default_factory=list)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
-    cached_tokens: int = Field(ge=0)
+    cache_creation_tokens: int = Field(ge=0)
+    cache_read_tokens: int = Field(ge=0)
     cost_usd: Decimal
     by_purpose: list[PurposeTotals] = Field(default_factory=list)
     per_call: list[CallRecord] = Field(default_factory=list)
 
     @property
-    def caching_engaged(self) -> bool:
-        """Whether any call was served a cached prefix.
+    def cache_activity(self) -> "CacheActivity":
+        """Which half of prompt caching this pass did, across every call in it.
 
-        False across a whole multi-call pass means the prefix is not being cached — either
-        it is not marked, or it is marked but varies, or it is shorter than the model's
-        minimum cacheable prefix. See the note in the module docstring: on this path it is
-        the third, and that is a fact about the prompt's shape, not a bug to route around.
+        The same four-way branch as `ModelCall.cache_activity`, restated rather than
+        imported for the reason the module docstring gives: this file must stay able to
+        report a paid-for run even if something in `spine` raises. Four lines of arithmetic
+        is the price of that, and the wording of the conclusion lives in `describe_cache`.
         """
-        return self.cached_tokens > 0
+        if self.cache_creation_tokens and self.cache_read_tokens:
+            return "writing_and_reading"
+        if self.cache_creation_tokens:
+            return "writing"
+        if self.cache_read_tokens:
+            return "reading"
+        return "none"
+
+    def describe_cache(self) -> str:
+        """One line naming what the cache actually did, with no verdict attached.
+
+        Says which of the two things happened. It deliberately does not say that "caching
+        is engaged", because that sentence is true of a pass that only ever wrote — and a
+        pass that only ever writes is paying the ~1.25x write premium on every call and
+        collecting the ~0.1x read discount on none of them. The earlier version of this
+        line drew exactly that conclusion from one conflated counter.
+        """
+        writes, reads = self.cache_creation_tokens, self.cache_read_tokens
+        verdicts = {
+            "none": (
+                "no cache activity of either kind — nothing was marked cacheable, or every "
+                "marked prefix fell below the model's minimum cacheable length"
+            ),
+            "writing": (
+                "WRITES ONLY, NO READS — every call paid the write premium and none "
+                "collected the read discount, which is what a cacheable block that varies "
+                "on every call looks like"
+            ),
+            "reading": "reads with no new writes — served entirely from an existing cache",
+            "writing_and_reading": (
+                "both — a prefix was written and later re-read. Whether that is a saving "
+                "depends on why the prefix came round again: reuse across calls is the "
+                "point of caching, but the same page re-sent inside one call is a discount "
+                "on work that should not have happened. The counts do not say which"
+            ),
+        }
+        return (
+            f"CACHE: {writes} token(s) written, {reads} token(s) read — "
+            f"{verdicts[self.cache_activity]}."
+        )
 
     def describe(self) -> str:
         """The snapshot as a block of stdout, so it lands in the CI log unaided."""
@@ -110,31 +152,31 @@ class LedgerSnapshot(BaseModel):
             f"replayed) to {', '.join(self.models) or '(none)'} at "
             f"{self.taken_at.isoformat(timespec='seconds')}.",
             "",
-            "| Purpose | Calls | Prompt | Completion | Cached | Cost (USD) |",
-            "|---|---:|---:|---:|---:|---:|",
+            "| Purpose | Calls | Prompt | Completion | Cache writes | Cache reads | Cost (USD) |",
+            "|---|---:|---:|---:|---:|---:|---:|",
         ]
         lines += [
             f"| `{item.purpose}` | {item.calls} | {item.prompt_tokens} | "
-            f"{item.completion_tokens} | {item.cached_tokens} | {item.cost_usd:.6f} |"
+            f"{item.completion_tokens} | {item.cache_creation_tokens} | "
+            f"{item.cache_read_tokens} | {item.cost_usd:.6f} |"
             for item in self.by_purpose
         ]
         lines += [
             f"| **total** | **{self.calls}** | **{self.prompt_tokens}** | "
-            f"**{self.completion_tokens}** | **{self.cached_tokens}** | "
-            f"**{self.cost_usd:.6f}** |",
+            f"**{self.completion_tokens}** | **{self.cache_creation_tokens}** | "
+            f"**{self.cache_read_tokens}** | **{self.cost_usd:.6f}** |",
             "",
             f"LEDGER TOTAL: ${self.cost_usd:.6f} over {self.prompt_tokens} prompt and "
-            f"{self.completion_tokens} completion tokens ({self.cached_tokens} cached).",
-            f"CACHED TOKENS: {self.cached_tokens} — prompt caching "
-            f"{'IS' if self.caching_engaged else 'is NOT'} engaged on this path.",
+            f"{self.completion_tokens} completion tokens.",
+            self.describe_cache(),
             "",
-            "| # | Purpose | Prompt | Completion | Cached | Cost (USD) | ms |",
-            "|---:|---|---:|---:|---:|---:|---:|",
+            "| # | Purpose | Prompt | Completion | Cache writes | Cache reads | Cost (USD) | ms |",
+            "|---:|---|---:|---:|---:|---:|---:|---:|",
         ]
         lines += [
             f"| {call.index} | `{call.purpose}` | {call.prompt_tokens} | "
-            f"{call.completion_tokens} | {call.cached_tokens} | {call.cost_usd:.6f} | "
-            f"{call.latency_ms} |"
+            f"{call.completion_tokens} | {call.cache_creation_tokens} | "
+            f"{call.cache_read_tokens} | {call.cost_usd:.6f} | {call.latency_ms} |"
             for call in self.per_call
         ]
         lines.append("")
@@ -156,7 +198,8 @@ def snapshot_of(calls: "tuple[ModelCall, ...] | list[ModelCall]", *, label: str)
         models=sorted({call.model for call in calls}),
         prompt_tokens=sum(call.prompt_tokens for call in calls),
         completion_tokens=sum(call.completion_tokens for call in calls),
-        cached_tokens=sum(call.cached_tokens for call in calls),
+        cache_creation_tokens=sum(call.cache_creation_tokens for call in calls),
+        cache_read_tokens=sum(call.cache_read_tokens for call in calls),
         cost_usd=sum((call.cost_usd for call in calls), Decimal("0")),
         per_call=[
             CallRecord(
@@ -165,7 +208,8 @@ def snapshot_of(calls: "tuple[ModelCall, ...] | list[ModelCall]", *, label: str)
                 model=call.model,
                 prompt_tokens=call.prompt_tokens,
                 completion_tokens=call.completion_tokens,
-                cached_tokens=call.cached_tokens,
+                cache_creation_tokens=call.cache_creation_tokens,
+                cache_read_tokens=call.cache_read_tokens,
                 cost_usd=call.cost_usd,
                 latency_ms=call.latency_ms,
             )
@@ -177,7 +221,8 @@ def snapshot_of(calls: "tuple[ModelCall, ...] | list[ModelCall]", *, label: str)
                 calls=len(group),
                 prompt_tokens=sum(call.prompt_tokens for call in group),
                 completion_tokens=sum(call.completion_tokens for call in group),
-                cached_tokens=sum(call.cached_tokens for call in group),
+                cache_creation_tokens=sum(call.cache_creation_tokens for call in group),
+                cache_read_tokens=sum(call.cache_read_tokens for call in group),
                 cost_usd=sum((call.cost_usd for call in group), Decimal("0")),
             )
             for purpose, group in sorted(grouped.items())

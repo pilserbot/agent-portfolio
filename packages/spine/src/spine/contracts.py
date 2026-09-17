@@ -62,6 +62,13 @@ Method = Literal["test", "analysis", "inspection", "demonstration"]
 # from producing a plausible, wrong cost figure — see `spine.kpi.cost_basis`.
 CallMode = Literal["live", "record", "replay"]
 
+# What a call did with the prompt cache. The two halves have opposite cost signs — a write
+# is billed at roughly 1.25x the normal input rate and a read at roughly 0.1x — so a single
+# "cached tokens" figure covering both cannot be read as either a saving or a surcharge.
+# "writing" over a whole multi-call pass is the shape of a cacheable block that changes
+# every call: paying the premium every time and never collecting the discount.
+CacheActivity = Literal["none", "writing", "reading", "writing_and_reading"]
+
 
 class ModelCall(BaseModel):
     """One call to a language model, and what it cost."""
@@ -72,7 +79,20 @@ class ModelCall(BaseModel):
     model: str
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
-    cached_tokens: int = Field(default=0, ge=0)
+    cache_creation_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Prompt tokens WRITTEN to the cache on this call, from the provider's "
+        "own cache-creation count. Billed at a premium (~1.25x). A write is a cost.",
+    )
+    cache_read_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Prompt tokens SERVED from the cache on this call, from the provider's "
+        "own cache-read count. Billed at a discount (~0.1x). A read is the saving. Kept "
+        "apart from the creation count rather than summed: the two have opposite cost "
+        "signs, so one combined figure says nothing about whether caching is paying off.",
+    )
     cost_usd: UsdAmount
     latency_ms: int = Field(ge=0)
     timestamp: datetime
@@ -88,6 +108,24 @@ class ModelCall(BaseModel):
     def was_billed(self) -> bool:
         """Whether making this call actually spent money."""
         return self.mode != "replay"
+
+    @property
+    def cache_activity(self) -> CacheActivity:
+        """Which half of prompt caching this call did, named rather than inferred.
+
+        A plain property rather than a `computed_field`, so it is derived at the point of
+        reading and never stored: the two counts are the record, and this is a reading of
+        them. One cold call can only ever write — there was nothing yet to read from — so
+        "writing" on a single call says nothing. It is the figure across a whole pass that
+        carries meaning.
+        """
+        if self.cache_creation_tokens and self.cache_read_tokens:
+            return "writing_and_reading"
+        if self.cache_creation_tokens:
+            return "writing"
+        if self.cache_read_tokens:
+            return "reading"
+        return "none"
 
 
 class StepTrace(BaseModel):
@@ -161,14 +199,20 @@ class AgentRun(BaseModel):
 
     @computed_field
     @property
-    def total_cached_tokens(self) -> int:
-        """Cached tokens across every model call in every step."""
-        return sum(call.cached_tokens for step in self.steps for call in step.model_calls)
+    def total_cache_creation_tokens(self) -> int:
+        """Tokens written to the cache across every model call. A premium paid."""
+        return sum(call.cache_creation_tokens for step in self.steps for call in step.model_calls)
+
+    @computed_field
+    @property
+    def total_cache_read_tokens(self) -> int:
+        """Tokens served from the cache across every model call. The discount collected."""
+        return sum(call.cache_read_tokens for step in self.steps for call in step.model_calls)
 
     @computed_field
     @property
     def total_tokens(self) -> int:
-        """Prompt plus completion tokens. Cached tokens are reported separately."""
+        """Prompt plus completion tokens. Cache activity is reported separately."""
         return self.total_prompt_tokens + self.total_completion_tokens
 
     @computed_field(description="Whether any step in the run failed.")

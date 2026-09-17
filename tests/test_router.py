@@ -39,7 +39,8 @@ def a_response(
     content: str = "hello",
     prompt_tokens: int = 1000,
     completion_tokens: int = 200,
-    cached_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
 ) -> ModelResponse:
     return ModelResponse(
         model=model,
@@ -54,7 +55,13 @@ def a_response(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=prompt_tokens + completion_tokens,
-            prompt_tokens_details=PromptTokensDetailsWrapper(cached_tokens=cached_tokens),
+            # litellm's own naming: `cached_tokens` is the READ count and
+            # `cache_write_tokens` the creation count. The fixture spells them out so a
+            # test that swapped them would read as obviously wrong.
+            prompt_tokens_details=PromptTokensDetailsWrapper(
+                cached_tokens=cache_read_tokens,
+                cache_write_tokens=cache_creation_tokens,
+            ),
         ),
     )
 
@@ -142,7 +149,7 @@ def test_cost_is_computed_from_the_provider_token_counts(tmp_path: Path) -> None
 
 
 def test_the_call_record_is_fully_populated(tmp_path: Path) -> None:
-    fake = Recorder(a_response(cached_tokens=400))
+    fake = Recorder(a_response(cache_creation_tokens=900, cache_read_tokens=400))
     router = a_router(tmp_path, fake)
 
     text, call = router.complete("hi", purpose="extract", tier="small")
@@ -150,10 +157,61 @@ def test_the_call_record_is_fully_populated(tmp_path: Path) -> None:
     assert text == "hello"
     assert call.provider == "anthropic"
     assert call.model == DEFAULT_MODEL_SMALL
-    assert call.cached_tokens == 400
+    assert call.cache_creation_tokens == 900
+    assert call.cache_read_tokens == 400
     assert call.purpose == "extract"
     assert call.timestamp == AT
     assert call.latency_ms >= 0
+
+
+def test_a_cache_write_is_not_reported_as_a_cache_read(tmp_path: Path) -> None:
+    """A write costs ~1.25x and a read ~0.1x, so reading one as the other inverts the sign.
+
+    A cold call can only ever write: there is nothing yet to read from. A counter that
+    covered both would show a non-zero figure here and invite the conclusion that caching
+    was paying off, when what actually happened was a surcharge.
+    """
+    fake = Recorder(a_response(cache_creation_tokens=5000, cache_read_tokens=0))
+    router = a_router(tmp_path, fake)
+
+    _, call = router.complete("hi", purpose="extract", tier="small")
+
+    assert call.cache_creation_tokens == 5000
+    assert call.cache_read_tokens == 0
+    assert call.cache_activity == "writing"
+
+
+def test_a_cache_read_is_not_reported_as_a_cache_write(tmp_path: Path) -> None:
+    """The other direction, so neither field can be quietly reading the other's source."""
+    fake = Recorder(a_response(cache_creation_tokens=0, cache_read_tokens=5000))
+    router = a_router(tmp_path, fake)
+
+    _, call = router.complete("hi", purpose="extract", tier="small")
+
+    assert call.cache_creation_tokens == 0
+    assert call.cache_read_tokens == 5000
+    assert call.cache_activity == "reading"
+
+
+def test_a_call_that_writes_and_reads_says_so(tmp_path: Path) -> None:
+    fake = Recorder(a_response(cache_creation_tokens=300, cache_read_tokens=5000))
+    router = a_router(tmp_path, fake)
+
+    _, call = router.complete("hi", purpose="extract", tier="small")
+
+    assert call.cache_activity == "writing_and_reading"
+
+
+def test_a_provider_that_reports_no_cache_counts_at_all(tmp_path: Path) -> None:
+    """Neither field may invent a number when the provider supplied none."""
+    fake = Recorder(a_response())
+    router = a_router(tmp_path, fake)
+
+    _, call = router.complete("hi", purpose="extract", tier="small")
+
+    assert call.cache_creation_tokens == 0
+    assert call.cache_read_tokens == 0
+    assert call.cache_activity == "none"
 
 
 def test_a_bigger_call_costs_more(tmp_path: Path) -> None:

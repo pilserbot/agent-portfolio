@@ -198,8 +198,25 @@ def _sleep_for(attempt: int, rng: random.Random) -> float:
     return rng.uniform(0.0, window)
 
 
-def _cached_tokens(response: ModelResponse) -> int:
-    """Read cached prompt tokens off a response, tolerating providers that omit them."""
+# litellm's two cache counters, and the Anthropic fields they are populated from. Verified
+# against litellm 1.100.0, `litellm/types/utils.py::Usage.__init__`:
+#
+#   prompt_tokens_details.cached_tokens       <- usage.cache_read_input_tokens
+#   prompt_tokens_details.cache_write_tokens  <- usage.cache_creation_input_tokens
+#
+# The names are a trap: litellm's `cached_tokens` is the READ count alone, not both halves.
+# Each is read from its own field below and neither is derived from the other, because a
+# figure that added a write to a read would be the sum of a surcharge and a discount.
+# TODO: `cache_write_tokens` is aliased to `cache_creation_tokens` inside litellm and the
+# alias could outlive the name; if a litellm upgrade zeroes creation counts, check there.
+def _cache_creation_tokens(response: ModelResponse) -> int:
+    """Prompt tokens written to the cache, tolerating providers that report none."""
+    details = getattr(getattr(response, "usage", None), "prompt_tokens_details", None)
+    return int(getattr(details, "cache_write_tokens", 0) or 0)
+
+
+def _cache_read_tokens(response: ModelResponse) -> int:
+    """Prompt tokens served from the cache, tolerating providers that report none."""
     details = getattr(getattr(response, "usage", None), "prompt_tokens_details", None)
     return int(getattr(details, "cached_tokens", 0) or 0)
 
@@ -408,7 +425,8 @@ class Router:
             model=model,
             prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
             completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
-            cached_tokens=_cached_tokens(response),
+            cache_creation_tokens=_cache_creation_tokens(response),
+            cache_read_tokens=_cache_read_tokens(response),
             cost_usd=self._price(response, model),
             latency_ms=latency_ms,
             timestamp=self._now(),
