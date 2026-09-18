@@ -20,9 +20,12 @@ defect was found. That is the honest result and the report says so: the recall f
 is recall of *detection*, and the outputs are the next step's work. Reading it as end-to-end
 recall would flatter the second half of a job that has not been done.
 
-**Cost.** Extraction is one call per page and detection is another, so a full run over the
-three specification documents is 28 calls: 14 and 14. The two ask different questions of the
-same text and a pipeline that cached the extraction would pay for the second only.
+**Cost.** 28 calls over the three specification documents: 14 to extract and 14 to read
+claims, one of each per page that carries a clause. The two passes ask different questions
+of the same text, so neither can be skipped — but the *extraction* half can be handed in.
+A caller that already holds an `ExtractionResult` for this corpus passes it as `extraction`
+and this run makes 14 calls, not 28. That is how the live suite stays at 28 calls in total
+rather than 42: the extraction test's pass is the one both tests use.
 
 **Why this lives in `eval` and not beside the detectors.** It scores against the answer key,
 and the gold-leakage guard forbids any module outside `eval` from so much as importing the
@@ -134,17 +137,33 @@ def run(
     confidence_threshold: float = CONFIDENCE_THRESHOLD,
     queue_root: Path | None = None,
     at: datetime | None = None,
+    extraction: ExtractionResult | None = None,
 ) -> DetectionRun:
-    """Load a tender, extract it, detect, score, queue the unmatched and return the lot."""
+    """Load a tender, extract it, detect, score, queue the unmatched and return the lot.
+
+    `extraction` may be supplied by a caller that already has one for this corpus, and then
+    no extraction call is made at all. That is not an optimisation bolted on: extraction is
+    deterministic given the corpus and the policy, so a second pass over the same three
+    documents buys nothing and costs 14 calls, about $0.89 and roughly ten minutes. A
+    supplied result is checked against the corpus it is about, because silently detecting
+    over requirements extracted from a different package would be worse than paying twice.
+    """
     package: TenderPackage = load_tender(folder)
     corpus = extraction_corpus(package)
 
-    extraction = extract_requirements(
-        corpus,
-        complete,
-        policy=ITB_2_1_POLICY,
-        style=KESSLER_POINT_CLAUSE_STYLE,
-    )
+    if extraction is None:
+        extraction = extract_requirements(
+            corpus,
+            complete,
+            policy=ITB_2_1_POLICY,
+            style=KESSLER_POINT_CLAUSE_STYLE,
+        )
+    elif extraction.corpus_name != corpus.name:
+        raise ValueError(
+            f"the supplied extraction is of {extraction.corpus_name!r} and this run is over "
+            f"{corpus.name!r}. Detecting over one package's requirements while scoring "
+            f"against another's gold set would produce a number about nothing."
+        )
     detection = detect(
         extraction.requirements,
         corpus,

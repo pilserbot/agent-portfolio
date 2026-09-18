@@ -74,18 +74,17 @@ the scope, and that nothing was invented.
 
 import os
 import uuid
-from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 from ledger import LedgerSnapshot, artifact_dir, persist_ledger
-from pydantic import BaseModel
+from live_extraction import EXPECTED_EXTRACTION_CALLS, LiveExtraction
 
 from req_core.anchors import verify
 from req_core.clauses import clauses_on_page
-from req_core.extraction import EXTRACT_PURPOSE, PageReading, build_prompt, extract_requirements
+from req_core.extraction import EXTRACT_PURPOSE, PageReading, build_prompt
 from ri05_tender.extract.config import ITB_2_1_POLICY, KESSLER_POINT_CLAUSE_STYLE
 from ri05_tender.extract.gate import (
     MATRIX_DOCUMENT_ID,
@@ -112,7 +111,6 @@ if TYPE_CHECKING:
     from req_core.clauses import Clause
     from req_core.contracts import ExtractionResult
     from req_core.corpus import CorpusPage, SourceCorpus
-    from req_core.extraction import StructuredCompletion
     from ri05_tender.extract.gate import MatrixComparison
     from spine.kpi import CostReport
 
@@ -151,20 +149,6 @@ def a_router(tmp_path: Path) -> Router:
     return Router(
         RouterConfig.from_env().model_copy(update={"ledger_path": tmp_path / "ledger.json"})
     )
-
-
-def router_completion(router: Router) -> "StructuredCompletion":
-    """Bind a router into the `StructuredCompletion` shape `req_core` takes.
-
-    This adapter is the whole of the coupling between the extractor and this project's model
-    routing. `req_core` holds no client, no key and no retry policy; it holds a callable.
-    """
-
-    def complete(prompt: str, schema: type[BaseModel], *, purpose: str) -> BaseModel:
-        obj, _call = router.structured(prompt, schema, purpose=purpose, tier="large")
-        return obj
-
-    return complete
 
 
 # --- the smoke test: one page, one call, every pull request ------------------------------
@@ -242,10 +226,21 @@ def _cheapest_page(corpus: "SourceCorpus") -> "tuple[CorpusPage, list[Clause]]":
 @needs_key
 @needs_full_eval
 def test_a_real_extraction_pass_anchors_every_requirement_and_clears_the_gate(
-    tmp_path: Path,
+    live_extraction: LiveExtraction,
 ) -> None:
-    package = load_tender(KESSLER_POINT)
-    corpus = extraction_corpus(package)
+    """The gate, over the session's single extraction pass.
+
+    The pass itself lives in the `live_extraction` fixture because the findings run needs
+    exactly the same result, and extracting the same corpus twice in one job cost 14 calls
+    and about ten minutes for an answer already in hand. The fixture persists its ledger
+    before this test sees anything, so every assertion below is free to fail without costing
+    the measurement.
+    """
+    package = live_extraction.package
+    corpus = live_extraction.corpus
+    result = live_extraction.result
+    snapshot = live_extraction.snapshot
+    started, finished = live_extraction.started_at, live_extraction.finished_at
 
     # The corpus physically cannot hold the matrix — `SourceCorpus` refuses it — so this is a
     # restatement of a guarantee already made, placed here because the live run is the one
@@ -253,23 +248,12 @@ def test_a_real_extraction_pass_anchors_every_requirement_and_clears_the_gate(
     assert MATRIX_DOCUMENT_ID not in corpus.document_ids
     assert corpus.withheld == {MATRIX_DOCUMENT_ID}
 
-    router = a_router(tmp_path)
-    started = datetime.now(UTC)
+    assert snapshot.calls == EXPECTED_EXTRACTION_CALLS, (
+        f"extraction made {snapshot.calls} call(s) against {EXPECTED_EXTRACTION_CALLS} "
+        f"expected — one per page carrying a clause. A different number means the batching "
+        f"changed, and the cost of every labelled run changed with it."
+    )
 
-    # Persisted the instant extraction returns, or raises. Every assertion below this point
-    # is allowed to fail without costing the measurement, because the measurement is already
-    # on disk and already in the log.
-    try:
-        result = extract_requirements(
-            corpus,
-            router_completion(router),
-            policy=ITB_2_1_POLICY,
-            style=KESSLER_POINT_CLAUSE_STYLE,
-        )
-    finally:
-        snapshot = persist_ledger(router, label="full_pass")
-
-    finished = datetime.now(UTC)
     verify_scope(result, corpus)
 
     # --- 1. the hard assertion, on output nobody scripted --------------------------------
@@ -306,7 +290,7 @@ def test_a_real_extraction_pass_anchors_every_requirement_and_clears_the_gate(
                 started_at=started,
                 finished_at=finished,
                 status="ok",
-                model_calls=list(router.ledger.calls),
+                model_calls=list(live_extraction.calls),
             )
         ],
         status="completed",

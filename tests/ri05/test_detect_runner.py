@@ -16,7 +16,7 @@ import pytest
 
 from req_core.claims import ClauseClaims, Constraint, PageClaims
 from req_core.detectors import DETECTORS
-from req_core.extraction import ClauseReading, PageReading
+from req_core.extraction import EXTRACT_PURPOSE, ClauseReading, PageReading
 from ri05_tender.detect.config import CONFIDENCE_THRESHOLD, ORDINAL_SCALES, SEVERITY_POLICY
 from ri05_tender.eval.findings_run import (
     DETECTOR_TO_FINDING_TYPE,
@@ -202,3 +202,63 @@ def test_the_report_names_the_queue_when_one_was_written(tmp_path: Path) -> None
 
     assert "Adjudication queue written to" in rendered
     assert str(written.queue_path) in rendered
+
+
+# --- a handed-in extraction -----------------------------------------------------------------
+#
+# The live suite used to extract this corpus twice in one job — once for the gate and once
+# inside the findings run — for 42 model calls where 28 do. `run` now takes an
+# `ExtractionResult`, and these tests pin both halves of that: the pass really is skipped,
+# and a result from the wrong corpus is refused rather than silently scored.
+
+
+class CountingCompletion:
+    """The scripted stub, counting how many prompts of each kind it was asked."""
+
+    def __init__(self) -> None:
+        """Start with nothing asked."""
+        self.purposes: list[str] = []
+
+    def __call__(self, prompt: str, schema: type, *, purpose: str):  # noqa: ANN204 - two schemas
+        """Record the purpose, then answer exactly as `scripted` does."""
+        self.purposes.append(purpose)
+        return scripted(prompt, schema, purpose=purpose)
+
+
+def test_a_handed_in_extraction_is_used_and_not_recomputed() -> None:
+    first = CountingCompletion()
+    done = run(KESSLER_POINT, first)
+    extraction_purposes = [p for p in first.purposes if p == EXTRACT_PURPOSE]
+    assert extraction_purposes, "the unassisted run must extract for itself"
+
+    second = CountingCompletion()
+    reused = run(KESSLER_POINT, second, extraction=done.extraction)
+
+    assert reused.extraction is done.extraction
+    assert EXTRACT_PURPOSE not in second.purposes, (
+        "a run handed an extraction must make no extraction call at all — that saving is the "
+        "whole reason the parameter exists"
+    )
+    assert second.purposes, "the claims pass must still run"
+    assert len(second.purposes) < len(first.purposes)
+
+
+def test_a_handed_in_extraction_produces_the_same_detection() -> None:
+    """Sharing the pass must not change the answer, or the saving would not be free."""
+    done = run(KESSLER_POINT, scripted)
+    reused = run(KESSLER_POINT, scripted, extraction=done.extraction)
+
+    assert reused.detection.clauses_examined == done.detection.clauses_examined
+    assert [f.finding_id for f in reused.detection.findings] == [
+        f.finding_id for f in done.detection.findings
+    ]
+    assert reused.card.scored_items == done.card.scored_items
+
+
+def test_an_extraction_of_a_different_corpus_is_refused() -> None:
+    """The guard that makes the hand-in safe: wrong corpus in, error out, not a score."""
+    done = run(KESSLER_POINT, scripted)
+    foreign = done.extraction.model_copy(update={"corpus_name": "some-other-tender"})
+
+    with pytest.raises(ValueError, match="some-other-tender"):
+        run(KESSLER_POINT, scripted, extraction=foreign)

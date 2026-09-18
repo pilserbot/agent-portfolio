@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from ledger import artifact_dir, persist_ledger
+from live_extraction import EXPECTED_EXTRACTION_CALLS, LiveExtraction
 
 from ri05_tender.detect.config import CONFIDENCE_THRESHOLD
 from ri05_tender.eval.findings_run import render_markdown, run
@@ -32,9 +33,14 @@ KESSLER_POINT = Path("data/tenders/kessler_point")
 
 FULL_EVAL_ENV = "RI05_FULL_EVAL"
 
-# Extraction is 14 calls and claims is 14. A run materially above this is a batching bug,
-# not a surprise to absorb.
-EXPECTED_CALLS = 28
+# Claims only: extraction arrives from the fixture already done. A different number is a
+# batching bug or a lost hand-in, not a surprise to absorb — and either one costs money, so
+# it is asserted rather than watched.
+EXPECTED_CALLS = 14
+# What the whole labelled job spends on live calls: this run's claims plus the one shared
+# extraction pass. Stated here because the saving is the point of the hand-in, and a figure
+# nobody asserts is a figure that quietly goes back to 42.
+EXPECTED_JOB_CALLS = EXPECTED_CALLS + EXPECTED_EXTRACTION_CALLS
 COST_CEILING_USD = 6.00
 
 needs_key = pytest.mark.skipif(
@@ -43,7 +49,7 @@ needs_key = pytest.mark.skipif(
 needs_full_eval = pytest.mark.skipif(
     os.environ.get(FULL_EVAL_ENV, "").strip().lower() not in {"1", "true", "yes"},
     reason=(
-        f"the live findings run costs 28 calls and runs only on a push to main or a pull "
+        f"the live findings run costs 14 calls and runs only on a push to main or a pull "
         f"request labelled `full-eval` (set {FULL_EVAL_ENV})"
     ),
 )
@@ -52,7 +58,9 @@ needs_full_eval = pytest.mark.skipif(
 @pytest.mark.integration
 @needs_key
 @needs_full_eval
-def test_a_live_findings_run_detects_scores_and_reports_its_abstentions(tmp_path: Path) -> None:
+def test_a_live_findings_run_detects_scores_and_reports_its_abstentions(
+    tmp_path: Path, live_extraction: LiveExtraction
+) -> None:
     router = Router(
         RouterConfig.from_env().model_copy(update={"ledger_path": tmp_path / "ledger.json"})
     )
@@ -70,6 +78,8 @@ def test_a_live_findings_run_detects_scores_and_reports_its_abstentions(tmp_path
             complete,
             confidence_threshold=CONFIDENCE_THRESHOLD,
             queue_root=artifact_dir(),
+            # The extraction the gate test scores, handed in rather than paid for again.
+            extraction=live_extraction.result,
         )
     finally:
         snapshot = persist_ledger(router, label="findings_full")
@@ -96,14 +106,21 @@ def test_a_live_findings_run_detects_scores_and_reports_its_abstentions(tmp_path
 
     # --- cost --------------------------------------------------------------------------------
     assert snapshot.calls == EXPECTED_CALLS, (
-        f"the run made {snapshot.calls} call(s) against {EXPECTED_CALLS} expected — 14 for "
-        f"extraction and 14 for claims. A different number means the batching changed, and "
-        f"the cost of this step changed with it."
+        f"the run made {snapshot.calls} call(s) against {EXPECTED_CALLS} expected — claims "
+        f"only, one per page. {EXPECTED_CALLS + EXPECTED_EXTRACTION_CALLS} would mean the "
+        f"handed-in extraction was ignored and the corpus was extracted a second time; any "
+        f"other number means the batching changed. Both cost money."
+    )
+    assert snapshot.calls + live_extraction.snapshot.calls == EXPECTED_JOB_CALLS, (
+        f"the labelled job made {snapshot.calls + live_extraction.snapshot.calls} live "
+        f"call(s) against {EXPECTED_JOB_CALLS} expected."
     )
     assert float(snapshot.cost_usd) < COST_CEILING_USD, (
         f"the run cost ${snapshot.cost_usd} against a ceiling of ${COST_CEILING_USD:.2f}."
     )
-    assert {usage.purpose for usage in snapshot.by_purpose} == {
-        "req_core.read_clauses",
-        "req_core.read_claims",
-    }
+    # Claims and nothing else. `req_core.read_clauses` appearing here would mean this run
+    # extracted the corpus itself despite being handed a result.
+    assert {usage.purpose for usage in snapshot.by_purpose} == {"req_core.read_claims"}
+
+    # --- the extraction really was shared, not re-run -------------------------------------
+    assert result.extraction is live_extraction.result

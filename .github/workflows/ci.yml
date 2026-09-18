@@ -76,18 +76,14 @@ jobs:
   eval:
     name: eval
     runs-on: ubuntu-latest
-    # Measured, not guessed. A labelled run makes 42 live calls: extraction's own 14-call
-    # pass, plus the detection pass, which extracts the corpus again before reading claims
-    # over it (14 + 14). At the ~40s a call the ledger records for a full page, that is
-    # around 30 minutes of wall clock, and 30 was where the limit stood — so the job was
-    # cancelled mid-pass on main at 2d43914 and on this branch, both times throwing away
-    # calls already paid for. 60 leaves room for a slow page without inviting a hung job to
-    # sit for an hour. An unlabelled pull request still finishes in about a minute.
-    #
-    # The duplication is real and is NOT fixed here: the detection pass re-extracts what the
-    # extraction pass just extracted, so a full run pays roughly $0.89 twice. Sharing one
-    # extraction between the two is a design change, and raising a timeout that was measured
-    # wrong should not smuggle one in.
+    # Headroom, not the fix. What used to overrun this job was a duplicated extraction: the
+    # findings run re-extracted the corpus the extraction gate had just extracted, 42 live
+    # calls where 28 do. That is fixed in the tests — one session-scoped extraction, handed
+    # to both — and the call counts are asserted there so a regression fails on a number
+    # instead of on a bill. This ceiling only keeps a slow page or a retried call from being
+    # cancelled mid-pass, which throws away calls already paid for; it is not load-bearing
+    # and raising it further would be treating a symptom. An unlabelled pull request runs
+    # the smoke test alone and finishes in about a minute.
     timeout-minutes: 60
     if: >-
       github.event_name == 'pull_request'
