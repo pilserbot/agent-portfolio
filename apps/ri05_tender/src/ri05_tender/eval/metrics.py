@@ -140,6 +140,152 @@ def _breakdowns(
     ]
 
 
+class RecallPair(BaseModel):
+    """One recall figure computed twice: as reported, and as it would read with no threshold.
+
+    The delta between them is the price of the abstention policy, in recall, as a number.
+    Without it a zero cannot be read: a detector that located a planted defect and was
+    withheld by the threshold scores exactly the same as one that never saw it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    total: int = Field(ge=0)
+    found: int = Field(ge=0, description="Matched by findings the run was prepared to assert.")
+    found_if_asserted: int = Field(
+        ge=0, description="Matched when the withheld findings are scored alongside them."
+    )
+    value: float = Field(ge=0.0, le=1.0)
+    value_if_asserted: float = Field(ge=0.0, le=1.0)
+
+    @computed_field
+    @property
+    def delta(self) -> float:
+        """Recall the threshold is costing. Zero means abstention is not what is missing."""
+        return self.value_if_asserted - self.value
+
+    @computed_field
+    @property
+    def recovered(self) -> int:
+        """Items a withheld finding would have answered.
+
+        Normally zero or positive. Negative is possible and is not an error: assignment is
+        one finding to one item, so a withheld finding can take an item from an asserted one
+        and leave that one unmatched. It would be worth knowing about, so it is not clamped.
+        """
+        return self.found_if_asserted - self.found
+
+
+class AbstentionCost(BaseModel):
+    """What the confidence threshold cost this run, measured rather than assumed.
+
+    Every figure here is the same recall the card already reports, recomputed over the
+    asserted findings **and** the withheld ones together. It is not a second opinion about
+    quality: scoring the withheld set is exactly what the run declined to do, and this says
+    what declining was worth. The run's actual recall is still the one over what it asserted.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    asserted_findings: int = Field(ge=0)
+    abstained_findings: int = Field(ge=0)
+    overall: RecallPair
+    weighted_value: float = Field(ge=0.0, le=1.0)
+    weighted_value_if_asserted: float = Field(ge=0.0, le=1.0)
+    unstated: RecallPair
+    displaced: RecallPair
+    addressable: RecallPair | None = None
+    by_class: list[RecallPair] = Field(default_factory=list)
+    by_tier: list[RecallPair] = Field(default_factory=list)
+    by_severity: list[RecallPair] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def weighted_delta(self) -> float:
+        """Severity-weighted recall the threshold is costing."""
+        return self.weighted_value_if_asserted - self.weighted_value
+
+    @computed_field
+    @property
+    def abstention_rate(self) -> float:
+        """Share of all findings the threshold withheld. 0.0 over no findings."""
+        total = self.asserted_findings + self.abstained_findings
+        return self.abstained_findings / total if total else 0.0
+
+
+def _pair(
+    key: str,
+    items: Sequence[GoldItem],
+    report: MatchReport,
+    if_asserted: MatchReport,
+) -> RecallPair:
+    """One group's recall, computed both ways through the same arithmetic."""
+    matched, matched_if = report.matched_gold_ids, if_asserted.matched_gold_ids
+    return RecallPair(
+        key=key,
+        total=len(items),
+        found=sum(1 for item in items if item.id in matched),
+        found_if_asserted=sum(1 for item in items if item.id in matched_if),
+        value=_recall_of(items, report).value,
+        value_if_asserted=_recall_of(items, if_asserted).value,
+    )
+
+
+def abstention_cost(
+    gold: Sequence[GoldItem],
+    report: MatchReport,
+    if_asserted: MatchReport,
+    *,
+    asserted_findings: int,
+    abstained_findings: int,
+    addressable_ids: Collection[str] | None = None,
+) -> AbstentionCost:
+    """Recompute every recall figure over the withheld findings as well, and pair them.
+
+    `if_asserted` is a match report over the asserted findings **plus** the abstained ones.
+    Building it is the caller's job because only the caller knows which findings were
+    withheld; this module will not re-derive that from a confidence it would have to compare
+    against a threshold it does not own.
+    """
+    by_class: dict[str, list[GoldItem]] = {}
+    by_tier: dict[str, list[GoldItem]] = {}
+    by_severity: dict[str, list[GoldItem]] = {}
+    for item in gold:
+        for name in item.classes:
+            by_class.setdefault(name, []).append(item)
+        by_tier.setdefault(item.tier, []).append(item)
+        by_severity.setdefault(item.severity, []).append(item)
+
+    unstated = [item for item in gold if UNSTATED_CLASS in item.classes]
+    displaced = [item for item in gold if DISPLACED_CLASS in item.classes]
+
+    addressable_pair = None
+    if addressable_ids is not None:
+        wanted = set(addressable_ids)
+        addressable_pair = _pair(
+            "addressable", [item for item in gold if item.id in wanted], report, if_asserted
+        )
+
+    return AbstentionCost(
+        asserted_findings=asserted_findings,
+        abstained_findings=abstained_findings,
+        overall=_pair("overall", gold, report, if_asserted),
+        weighted_value=_weighted_recall(gold, report),
+        weighted_value_if_asserted=_weighted_recall(gold, if_asserted),
+        unstated=_pair(UNSTATED_CLASS, unstated, report, if_asserted),
+        displaced=_pair(DISPLACED_CLASS, displaced, report, if_asserted),
+        addressable=addressable_pair,
+        by_class=[
+            _pair(key, items, report, if_asserted) for key, items in sorted(by_class.items())
+        ],
+        by_tier=[_pair(key, items, report, if_asserted) for key, items in sorted(by_tier.items())],
+        by_severity=[
+            _pair(key, items, report, if_asserted) for key, items in sorted(by_severity.items())
+        ],
+    )
+
+
 # What a per-item row says happened. "partial" is not one of the matcher's own gold-item
 # outcomes: a partially answered item IS a miss for recall, and this vocabulary keeps the
 # reason visible — a finding cited the clause and said the wrong kind of thing about it,
@@ -369,6 +515,12 @@ class ScoreCard(BaseModel):
     unmatched: int = Field(ge=0)
     misses: int = Field(ge=0)
 
+    abstention: AbstentionCost | None = Field(
+        default=None,
+        description="What the confidence threshold cost, when the caller supplied a match "
+        "report over the withheld findings too. None when nobody did, and the report then "
+        "prints no delta rather than implying abstention cost nothing.",
+    )
     addressable: Addressability | None = Field(
         default=None,
         description="The ceiling behind `recall_overall`, when the caller said which "
@@ -403,6 +555,8 @@ def score(
     pending: Sequence[str] = (),
     emitted_finding_types: Collection[str] | None = None,
     emitted_outputs: Collection[str] = (),
+    if_asserted: MatchReport | None = None,
+    abstained_findings: int = 0,
 ) -> ScoreCard:
     """Compute every figure from a match report and the gold items behind it.
 
@@ -415,9 +569,25 @@ def score(
     the caller can produce, and `emitted_outputs` which of a gold item's `expects_*`
     artefacts any of them carries. Give them and the card states recall's ceiling beside
     recall. Leave them out and it states none — better than a ceiling this module guessed.
+
+    `if_asserted` is a match report built over the asserted findings **and** the withheld
+    ones. Give it and every recall figure gets a second reading beside it and a delta: what
+    the threshold cost. Leave it out and the card carries none, which is the right default —
+    a run that reports no delta has not measured one, and that is different from measuring
+    zero.
     """
     matched = report.matched_gold_ids
     confirmed_new = set(true_new)
+    reachable = (
+        None
+        if emitted_finding_types is None
+        else addressability(
+            gold,
+            report,
+            emitted_finding_types=emitted_finding_types,
+            emitted_outputs=emitted_outputs,
+        )
+    )
 
     by_class: dict[str, list[GoldItem]] = {}
     for item in gold:
@@ -476,14 +646,19 @@ def score(
         duplicates=len(report.duplicates),
         unmatched=len(report.unmatched),
         misses=len(report.misses),
-        addressable=(
+        addressable=reachable,
+        abstention=(
             None
-            if emitted_finding_types is None
-            else addressability(
+            if if_asserted is None
+            else abstention_cost(
                 gold,
                 report,
-                emitted_finding_types=emitted_finding_types,
-                emitted_outputs=emitted_outputs,
+                if_asserted,
+                asserted_findings=len(finding_ids),
+                abstained_findings=abstained_findings,
+                addressable_ids=(
+                    None if reachable is None else [row.gold_id for row in reachable.items]
+                ),
             )
         ),
     )

@@ -297,16 +297,29 @@ def test_every_addressable_item_gets_a_row_naming_what_blocked_it(result) -> Non
         assert f"`{item.gold_id}`" in rendered
 
 
-def test_the_ceiling_counts_the_split_bound_items_as_unreachable(result) -> None:  # noqa: ANN001
-    """Five items demand only a split, and nothing emits one — so the ceiling excludes them."""
+def test_the_ceiling_counts_the_split_bound_items_as_reachable(result) -> None:  # noqa: ANN001
+    """Five items demand only a split, and the splitter's own lineage now reaches the scorer.
+
+    This test asserted the opposite until `as_eval_finding` passed `children` through, and
+    it failing was the point: the ceiling and `EMITTED_OUTPUTS` are one fact in two places.
+    """
     card = result.card.addressable
     assert card is not None
 
-    split_bound = [item for item in card.items if item.unemitted_demands == ["split_children"]]
-    assert len(split_bound) == 5
-    assert all(not item.reachable for item in split_bound)
-    assert card.reachable_total == 5
-    assert card.blocked_on_outputs == 27
+    split_only = [item for item in card.items if item.demands == ["split_children"]]
+    assert len(split_only) == 5
+    assert all(item.reachable for item in split_only), "nothing about them is unemitted now"
+    assert all(not item.unemitted_demands for item in split_only)
+
+    assert card.reachable_total == 10, "five demanding nothing, plus these five"
+    assert card.blocked_on_outputs == 22
+
+    # The one item demanding a split AND a checklist entry stays out: half an answer is not
+    # an answer, and `checklist_entry` is still emitted by nothing.
+    both = [item for item in card.items if "checklist_entry" in item.demands]
+    assert len(both) == 1
+    assert both[0].unemitted_demands == ["checklist_entry"]
+    assert not both[0].reachable
 
 
 def test_the_unmatched_findings_are_grouped_and_sampled_not_adjudicated(result) -> None:  # noqa: ANN001

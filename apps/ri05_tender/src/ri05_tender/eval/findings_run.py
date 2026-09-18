@@ -56,6 +56,7 @@ from ri05_tender.eval.loader import load_gold
 from ri05_tender.eval.matcher import MatchReport, match_findings, source_text
 from ri05_tender.eval.metrics import ScoreCard, score
 from ri05_tender.eval.models import Finding as EvalFinding
+from ri05_tender.eval.models import FindingOutputs
 from ri05_tender.eval.report import render_markdown as render_score_card
 from ri05_tender.extract.config import ITB_2_1_POLICY, KESSLER_POINT_CLAUSE_STYLE
 from ri05_tender.extract.gate import extraction_corpus
@@ -89,23 +90,26 @@ DETECTOR_TO_FINDING_TYPE: dict[str, str] = {
 }
 
 
-# Which of a gold item's `expects_*` artefacts the detectors actually carry today. Empty,
-# and that is the measured answer rather than an oversight in this list: `as_eval_finding`
-# below constructs `EvalFinding` without an `outputs=`, so every finding carries the default
-# `FindingOutputs()` and `present()` returns an empty set for all of them.
+# Which of a gold item's `expects_*` artefacts the detectors actually carry. `split_children`
+# only: `as_eval_finding` passes an `atomicity_split` finding's children through, and nothing
+# produces a clarification question, a price impact, an alternative, a checklist entry or a
+# no-bid recommendation yet.
 #
-# One of these is plumbing rather than capability. `atomicity_split` findings DO carry the
-# split children — `req_core.findings.Finding.children` is populated with the requirement
-# ids the clause was separated into, and the validator refuses a split finding with fewer
-# than two — but the adapter drops them on the way to `FindingOutputs.split_children`. Five
-# addressable gold items demand `split_children` and nothing else, so they score OUTPUT_MISS
-# today for a reason that is one assignment wide. Recorded here rather than fixed, because
-# the number this measures is only honest if the measurement lands before the fix.
-EMITTED_OUTPUTS: frozenset[str] = frozenset()
+# This was empty until the children were plumbed through, and the emptiness was measured
+# before it was fixed: five addressable gold items demand `split_children` and nothing else,
+# and they scored OUTPUT_MISS not because no detector could see the compound clause but
+# because the adapter dropped the lineage the splitter had already produced. The ceiling in
+# `metrics.Addressability` moves with this constant, which is why they change together.
+EMITTED_OUTPUTS: frozenset[str] = frozenset({"split_children"})
 
 
 def as_eval_finding(finding: CoreFinding) -> EvalFinding:
     """Convert a detector's finding into the record this project's matcher scores.
+
+    `split_children` carries the lineage straight through. The splitter already produced
+    the requirement ids a compound clause was separated into and the detector already holds
+    them; dropping them here was the whole reason five gold items demanding only a split
+    scored OUTPUT_MISS.
 
     `recovered_statement` is the finding's own statement, which is written by Python from
     the claims rather than quoted from the page — so it satisfies the matcher's rule that a
@@ -121,6 +125,11 @@ def as_eval_finding(finding: CoreFinding) -> EvalFinding:
         recovered_statement=finding.statement,
         evidence=[finding.source],
         confidence=finding.confidence,
+        # The split lineage the detector already holds. `children` is populated only on an
+        # `atomicity_split` finding — `req_core.findings.Finding` refuses children on any
+        # other detector and refuses a split carrying fewer than two — so this needs no
+        # branch on the detector name: everywhere else it is already empty.
+        outputs=FindingOutputs(split_children=list(finding.children)),
     )
 
 
@@ -201,8 +210,17 @@ def run(
     # a miss and not scored as a hit — it is scored as nothing, which is what abstaining
     # means, and it is reported beside the recall so the trade is visible.
     findings = [as_eval_finding(finding) for finding in detection.findings]
+    withheld = [as_eval_finding(finding) for finding in detection.abstained]
     gold = load_gold(package)
-    report = match_findings(findings, gold.scored, source=source_text(package))
+    source = source_text(package)
+    report = match_findings(findings, gold.scored, source=source)
+
+    # The same scoring over the withheld findings as well. This is not a second opinion
+    # about quality and nothing it produces is credited: it exists so the delta between the
+    # two says what the threshold cost. A detector that located a planted defect and was
+    # withheld scores identically to one that never saw it, and only this separates them.
+    if_asserted = match_findings(findings + withheld, gold.scored, source=source)
+
     card = score(
         tender_name=package.name,
         gold=gold.scored,
@@ -214,6 +232,8 @@ def run(
         # this module because this module is what wires the detectors to the scorer.
         emitted_finding_types=frozenset(DETECTOR_TO_FINDING_TYPE.values()),
         emitted_outputs=EMITTED_OUTPUTS,
+        if_asserted=if_asserted,
+        abstained_findings=len(withheld),
     )
 
     written: Path | None = None
