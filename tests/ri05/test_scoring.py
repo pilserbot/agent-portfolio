@@ -1418,3 +1418,235 @@ def test_the_recovery_requirement_rides_with_the_other_expected_outputs() -> Non
     item = a_recovery_item("G1", expects_clarification_question=True)
 
     assert item.expected_outputs == ["clarification_question", "recovered_statement"]
+
+
+# --- the ceiling behind the recall figure ---------------------------------------------------
+#
+# The first full scored run read 0 / 186. Most of that denominator was never reachable: only
+# the items whose classes map to a finding type some registered detector emits can be
+# answered at all, and of those, the ones demanding an output nothing produces cannot reach
+# MATCH however well the clause is read. These tests pin both denominators, because a recall
+# figure whose ceiling is not stated beside it is not interpretable.
+
+
+EMITTING = frozenset({"missing_tolerance", "atomicity_split", "unverifiable_requirement"})
+
+
+def test_only_items_a_registered_detector_could_answer_are_addressable() -> None:
+    gold = [
+        a_gold_item("G1", classes=["TOLERANCE"], finding_type="missing_tolerance"),
+        a_gold_item("G2", classes=["COMPOUND"], finding_type="atomicity_split"),
+        # Nothing emits contract_red_flag, so this one is out of the addressable set and
+        # still in recall's denominator — which is the whole distinction.
+        a_gold_item("G3", classes=["COMMERCIAL"], finding_type="contract_red_flag"),
+    ]
+    report = match_findings([], gold, source=None)
+    card = score(
+        tender_name="t",
+        gold=gold,
+        finding_ids=[],
+        report=report,
+        emitted_finding_types=EMITTING,
+    )
+
+    assert card.addressable is not None
+    assert card.addressable.scored_total == 3
+    assert card.addressable.total == 2
+    assert [item.gold_id for item in card.addressable.items] == ["G1", "G2"]
+
+
+def test_an_item_demanding_an_output_nothing_emits_is_outside_the_ceiling() -> None:
+    gold = [
+        a_gold_item("G1", classes=["TOLERANCE"], finding_type="missing_tolerance"),
+        a_gold_item(
+            "G2",
+            classes=["COMPOUND"],
+            finding_type="atomicity_split",
+            expects_split=True,
+        ),
+    ]
+    report = match_findings([], gold, source=None)
+    card = score(
+        tender_name="t",
+        gold=gold,
+        finding_ids=[],
+        report=report,
+        emitted_finding_types=EMITTING,
+        emitted_outputs=frozenset(),
+    )
+    assert card.addressable is not None
+
+    assert card.addressable.total == 2
+    assert card.addressable.reachable_total == 1, "G2 demands split_children, which nothing emits"
+    assert card.addressable.blocked_on_outputs == 1
+    rows = {item.gold_id: item for item in card.addressable.items}
+    assert rows["G1"].reachable and not rows["G1"].unemitted_demands
+    assert not rows["G2"].reachable
+    assert rows["G2"].unemitted_demands == ["split_children"]
+
+
+def test_emitting_the_output_moves_the_item_inside_the_ceiling() -> None:
+    """The same gold set, the same detectors, one output now produced. The ceiling moves."""
+    gold = [
+        a_gold_item("G2", classes=["COMPOUND"], finding_type="atomicity_split", expects_split=True)
+    ]
+    report = match_findings([], gold, source=None)
+    card = score(
+        tender_name="t",
+        gold=gold,
+        finding_ids=[],
+        report=report,
+        emitted_finding_types=EMITTING,
+        emitted_outputs=frozenset({"split_children"}),
+    )
+
+    assert card.addressable is not None
+    assert card.addressable.reachable_total == 1
+    assert card.addressable.blocked_on_outputs == 0
+
+
+def test_each_addressable_item_says_what_blocked_it() -> None:
+    """The four outcomes, each with the reason that distinguishes it from the others."""
+    gold = [
+        a_gold_item("MATCHED", refs=["A-1"], classes=["TOLERANCE"]),
+        a_gold_item("NO_OUTPUT", refs=["A-2"], classes=["COMPOUND"], expects_split=True),
+        a_gold_item("WRONG_TYPE", refs=["A-3"], classes=["TOLERANCE"]),
+        a_gold_item("UNTOUCHED", refs=["A-4"], classes=["TOLERANCE"]),
+    ]
+    findings = [
+        a_finding("f1", refs=["A-1"], finding_type="missing_tolerance"),
+        a_finding("f2", refs=["A-2"], finding_type="atomicity_split"),
+        # Cites the right clause, says the wrong kind of thing about it.
+        a_finding("f3", refs=["A-3"], finding_type="atomicity_split"),
+    ]
+    report = match_findings(findings, gold, source=None)
+    card = score(
+        tender_name="t",
+        gold=gold,
+        finding_ids=[f.finding_id for f in findings],
+        report=report,
+        emitted_finding_types=EMITTING,
+    )
+
+    assert card.addressable is not None
+    rows = {item.gold_id: item for item in card.addressable.items}
+
+    assert rows["MATCHED"].outcome == "match"
+    assert rows["MATCHED"].blocked_by == ""
+
+    assert rows["NO_OUTPUT"].outcome == "output_miss"
+    assert "split_children" in rows["NO_OUTPUT"].blocked_by
+
+    assert rows["WRONG_TYPE"].outcome == "partial"
+    assert "atomicity_split" in rows["WRONG_TYPE"].blocked_by
+
+    assert rows["UNTOUCHED"].outcome == "miss"
+    assert "no finding cited" in rows["UNTOUCHED"].blocked_by
+
+    assert card.addressable.found == 1
+    assert card.addressable.recall == pytest.approx(0.25)
+
+
+def test_the_ceiling_is_printed_beside_the_recall_it_bounds() -> None:
+    gold = [
+        a_gold_item("G1", classes=["TOLERANCE"]),
+        a_gold_item("G2", classes=["COMPOUND"], expects_split=True),
+        a_gold_item("G3", classes=["COMMERCIAL"], finding_type="contract_red_flag"),
+    ]
+    report = match_findings([], gold, source=None)
+    card = score(
+        tender_name="t",
+        gold=gold,
+        finding_ids=[],
+        report=report,
+        emitted_finding_types=EMITTING,
+    )
+    rendered = render_markdown(card)
+
+    assert "Recall over addressable items" in rendered
+    assert "0 / 2" in rendered
+    assert "Every addressable item" in rendered
+    # The per-item rows, and the items that are not addressable staying out of them.
+    assert "`G1`" in rendered and "`G2`" in rendered
+    assert "`G3`" not in rendered
+    # The ceiling is stated before the table, in words a reader can act on.
+    assert rendered.index("addressable") < rendered.index("Every addressable item")
+
+
+def test_a_card_with_no_ceiling_stated_prints_none() -> None:
+    """The baseline scores without a detector registry; it must not gain an invented ceiling."""
+    gold = [a_gold_item("G1", classes=["TOLERANCE"])]
+    card = score(
+        tender_name="t", gold=gold, finding_ids=[], report=match_findings([], gold, source=None)
+    )
+
+    assert card.addressable is None
+    assert "addressable" not in render_markdown(card)
+
+
+def test_the_real_gold_set_has_the_ceiling_the_detectors_can_reach() -> None:
+    """Pinned against the committed gold set and the registered detector map.
+
+    Not a target — a measurement of the gap between what the gold set plants and what the
+    six single-clause detectors can answer. It moves when a detector or an output is added,
+    and it should fail here when it does, so the number in the report is never stale.
+    """
+    from ri05_tender.eval.findings_run import DETECTOR_TO_FINDING_TYPE, EMITTED_OUTPUTS
+    from ri05_tender.tender.loader import load_tender
+
+    gold = load_gold(load_tender(KESSLER_POINT))
+    report = match_findings([], gold.scored, source=source_text(load_tender(KESSLER_POINT)))
+    card = score(
+        tender_name="kessler_point",
+        gold=gold.scored,
+        finding_ids=[],
+        report=report,
+        emitted_finding_types=frozenset(DETECTOR_TO_FINDING_TYPE.values()),
+        emitted_outputs=EMITTED_OUTPUTS,
+    )
+
+    assert card.addressable is not None
+    assert card.addressable.scored_total == 186
+    assert card.addressable.total == 32, "items the six detector families can speak to at all"
+    assert card.addressable.reachable_total == 5, "items demanding no output nothing emits"
+    assert card.addressable.blocked_on_outputs == 27
+    assert [item.gold_id for item in card.addressable.items if item.reachable] == [
+        "D4-03",
+        "D4-04",
+        "D4-06",
+        "D4-23",
+        "D4-37",
+    ]
+
+
+def test_the_split_children_an_atomicity_finding_holds_do_not_reach_the_scorer() -> None:
+    """Plumbing, not capability — and the assertion that says which.
+
+    `req_core` populates `Finding.children` on every atomicity_split finding and refuses one
+    with fewer than two. `as_eval_finding` constructs the scorer's record without an
+    `outputs=`, so those children never become `split_children` and the five gold items
+    demanding only a split score OUTPUT_MISS. This test fails the moment that is fixed,
+    which is when `EMITTED_OUTPUTS` and the ceiling above must both be updated with it.
+    """
+    from req_core.findings import Evidence
+    from req_core.findings import Finding as CoreFinding
+    from ri05_tender.eval.findings_run import EMITTED_OUTPUTS, as_eval_finding
+    from spine.contracts import EvidenceRef
+
+    core = CoreFinding(
+        finding_id="C-1::atomicity_split::1",
+        detector="atomicity_split",
+        requirement_id="C-1",
+        severity="major",
+        statement="The clause states three separable obligations.",
+        evidence=Evidence(summary="three obligations"),
+        source=EvidenceRef(source_id="s", document="d", page=1, clause="C-1", quote="shall"),
+        confidence=0.9,
+        children=["C-1.1", "C-1.2", "C-1.3"],
+    )
+    assert core.children == ["C-1.1", "C-1.2", "C-1.3"], "the splitter does produce lineage"
+
+    converted = as_eval_finding(core)
+    assert converted.outputs.split_children == [], "and the adapter drops it"
+    assert converted.outputs.present() == set()
+    assert "split_children" not in EMITTED_OUTPUTS

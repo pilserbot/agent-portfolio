@@ -56,6 +56,22 @@ def render_markdown(result: ScoreCard) -> str:
                     f"{result.recall_overall:.1%}",
                     f"{result.matches} / {result.scored_items}",
                 ),
+                *(
+                    []
+                    if result.addressable is None
+                    else [
+                        (
+                            "Recall over addressable items",
+                            f"{result.addressable.recall:.1%}",
+                            f"{result.addressable.found} / {result.addressable.total}",
+                        ),
+                        (
+                            "— of those, reachable today",
+                            f"{result.addressable.recall_reachable:.1%}",
+                            f"{result.addressable.found} / {result.addressable.reachable_total}",
+                        ),
+                    ]
+                ),
                 ("Recall (severity-weighted)", f"{result.recall_weighted:.1%}", "by weight"),
                 (
                     "UNSTATED recovery",
@@ -101,6 +117,8 @@ def render_markdown(result: ScoreCard) -> str:
         "### Recall by class",
         "",
         *_table(("Class", "Recall", "Found"), _breakdown_rows(result.by_class), "lrr"),
+        "",
+        *_addressable_section(result),
         "",
         "### No-bid gate",
         "",
@@ -168,3 +186,61 @@ def _gate_note(result: ScoreCard) -> str:
         "_The gate is not a rate: a bid going out on a tender the system should have "
         "refused is not offset by anything else on this page._"
     )
+
+
+def _addressable_section(result: ScoreCard) -> list[str]:
+    """The ceiling behind the recall figure, and a row for every item inside it.
+
+    Printed only when the caller said which finding types and outputs are wired up. A
+    recall of 0.0% over 186 items and a recall of 0.0% over the 32 the detectors can even
+    speak to are different statements, and the second is the one that says whether the
+    detectors are failing to find planted defects or were never able to answer them.
+    """
+    card = result.addressable
+    if card is None:
+        return []
+
+    blocked = card.blocked_on_outputs
+    outputs = ", ".join(f"`{name}`" for name in card.emitted_outputs) or "**none**"
+    lines = [
+        "### What the detectors could answer at all",
+        "",
+        f"Of **{card.scored_total}** scored item(s), **{card.total}** are *addressable*: "
+        f"their classes map to a finding type one of the registered detectors emits "
+        f"({', '.join(f'`{name}`' for name in card.emitted_finding_types)}). The other "
+        f"{card.scored_total - card.total} cannot be answered by any detector that exists, "
+        f"so they are in recall's denominator and out of this one.",
+        "",
+        f"Outputs any registered detector carries: {outputs}. **{blocked}** of the "
+        f"{card.total} addressable item(s) demand an output nothing emits and cannot reach "
+        f"MATCH however well the clause is read; **{card.reachable_total}** demand nothing "
+        f"that is missing, and those are the MATCH ceiling as the system stands.",
+        "",
+        "_A recall figure whose ceiling is not stated beside it is not interpretable. "
+        "These two denominators do not replace the overall one — the product is measured "
+        "against every planted defect — they say which part of the gap is this step's._",
+        "",
+        "#### Every addressable item",
+        "",
+        *_table(
+            ("Item", "Classes", "Severity", "Outcome", "What blocked it"),
+            [
+                (
+                    f"`{item.gold_id}`",
+                    ", ".join(item.classes),
+                    item.severity,
+                    item.outcome.upper(),
+                    item.blocked_by or "—",
+                )
+                for item in card.items
+            ],
+            "lllll",
+        ),
+        "",
+        "_PARTIAL here is not one of the matcher's gold-item outcomes: for recall the item "
+        "is a miss. It is named so the reason stays visible — a finding cited the clause "
+        "and said the wrong kind of thing about it, which is a different failure from "
+        "nothing citing the clause at all._",
+        "",
+    ]
+    return lines
