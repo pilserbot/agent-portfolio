@@ -118,6 +118,14 @@ class GoldItem(BaseModel):
     # way, without having to know a document exists.
     reclassified_rev3: Reclassification | None = None
 
+    # Set on the 23 items whose `refs` were re-derived from `ref_raw`. The builder's regex
+    # could not match the `XX-Y.NN` clause shape and fell back to storing the raw text as a
+    # single reference, so `['TS-B.36 + TS-B.38']` was one token equal to no clause id and
+    # the item could not anchor. The old value is kept here rather than discarded: a
+    # reference that changed is a change to what the answer key claims, and the previous
+    # claim should be visible on the record that makes the new one.
+    refs_prior: list[str] | None = None
+
     @property
     def expected_outputs(self) -> list[str]:
         """The output names a finding must carry to fully satisfy this item."""
