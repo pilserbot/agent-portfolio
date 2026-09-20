@@ -17,6 +17,13 @@ Three things this module refuses to let a caller do:
 - **Pass the no-bid gate on average.** The gate is not a rate. It is True only when every
   scored `no_bid` item was fully matched, because a bid that goes out on a tender the
   system should have refused is not offset by finding ninety other things.
+- **Quote a recall without its ceiling.** `Addressability` states how many of the scored
+  items the registered detectors could answer at all. The first full scored run read
+  0 / 186, and 154 of those 186 were never reachable by the six detector families that
+  existed: no detector emits a finding type their classes map to. A denominator nobody
+  can reach is not a measurement of the system, it is a measurement of the gap between
+  the gold set and what has been built so far, and the two say different things.
+
 - **Add UNSTATED recovery to DISPLACED recovery.** There is no combined figure and there is
   no field to put one in. The two used to be one class, IMPLICIT, and summing them is what
   hid the difference: finding an obligation that is written out somewhere nobody looks is a
@@ -29,11 +36,17 @@ for, or call a model. The severity weights are the ones specified and they are c
 here where they can be read, not buried in a formula.
 """
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from ri05_tender.eval.matcher import DISPLACED_CLASS, UNSTATED_CLASS, MatchReport
+from ri05_tender.eval.matcher import (
+    DISPLACED_CLASS,
+    UNSTATED_CLASS,
+    MatchReport,
+    allowed_finding_types,
+)
 from ri05_tender.eval.models import GoldItem, Severity
 from spine.contracts import Verdict
 from spine.eval import metrics as spine_metrics
@@ -127,6 +140,309 @@ def _breakdowns(
     ]
 
 
+class RecallPair(BaseModel):
+    """One recall figure computed twice: as reported, and as it would read with no threshold.
+
+    The delta between them is the price of the abstention policy, in recall, as a number.
+    Without it a zero cannot be read: a detector that located a planted defect and was
+    withheld by the threshold scores exactly the same as one that never saw it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    total: int = Field(ge=0)
+    found: int = Field(ge=0, description="Matched by findings the run was prepared to assert.")
+    found_if_asserted: int = Field(
+        ge=0, description="Matched when the withheld findings are scored alongside them."
+    )
+    value: float = Field(ge=0.0, le=1.0)
+    value_if_asserted: float = Field(ge=0.0, le=1.0)
+
+    @computed_field
+    @property
+    def delta(self) -> float:
+        """Recall the threshold is costing. Zero means abstention is not what is missing."""
+        return self.value_if_asserted - self.value
+
+    @computed_field
+    @property
+    def recovered(self) -> int:
+        """Items a withheld finding would have answered.
+
+        Normally zero or positive. Negative is possible and is not an error: assignment is
+        one finding to one item, so a withheld finding can take an item from an asserted one
+        and leave that one unmatched. It would be worth knowing about, so it is not clamped.
+        """
+        return self.found_if_asserted - self.found
+
+
+class AbstentionCost(BaseModel):
+    """What the confidence threshold cost this run, measured rather than assumed.
+
+    Every figure here is the same recall the card already reports, recomputed over the
+    asserted findings **and** the withheld ones together. It is not a second opinion about
+    quality: scoring the withheld set is exactly what the run declined to do, and this says
+    what declining was worth. The run's actual recall is still the one over what it asserted.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    asserted_findings: int = Field(ge=0)
+    abstained_findings: int = Field(ge=0)
+    overall: RecallPair
+    weighted_value: float = Field(ge=0.0, le=1.0)
+    weighted_value_if_asserted: float = Field(ge=0.0, le=1.0)
+    unstated: RecallPair
+    displaced: RecallPair
+    addressable: RecallPair | None = None
+    by_class: list[RecallPair] = Field(default_factory=list)
+    by_tier: list[RecallPair] = Field(default_factory=list)
+    by_severity: list[RecallPair] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def weighted_delta(self) -> float:
+        """Severity-weighted recall the threshold is costing."""
+        return self.weighted_value_if_asserted - self.weighted_value
+
+    @computed_field
+    @property
+    def abstention_rate(self) -> float:
+        """Share of all findings the threshold withheld. 0.0 over no findings."""
+        total = self.asserted_findings + self.abstained_findings
+        return self.abstained_findings / total if total else 0.0
+
+
+def _pair(
+    key: str,
+    items: Sequence[GoldItem],
+    report: MatchReport,
+    if_asserted: MatchReport,
+) -> RecallPair:
+    """One group's recall, computed both ways through the same arithmetic."""
+    matched, matched_if = report.matched_gold_ids, if_asserted.matched_gold_ids
+    return RecallPair(
+        key=key,
+        total=len(items),
+        found=sum(1 for item in items if item.id in matched),
+        found_if_asserted=sum(1 for item in items if item.id in matched_if),
+        value=_recall_of(items, report).value,
+        value_if_asserted=_recall_of(items, if_asserted).value,
+    )
+
+
+def abstention_cost(
+    gold: Sequence[GoldItem],
+    report: MatchReport,
+    if_asserted: MatchReport,
+    *,
+    asserted_findings: int,
+    abstained_findings: int,
+    addressable_ids: Collection[str] | None = None,
+) -> AbstentionCost:
+    """Recompute every recall figure over the withheld findings as well, and pair them.
+
+    `if_asserted` is a match report over the asserted findings **plus** the abstained ones.
+    Building it is the caller's job because only the caller knows which findings were
+    withheld; this module will not re-derive that from a confidence it would have to compare
+    against a threshold it does not own.
+    """
+    by_class: dict[str, list[GoldItem]] = {}
+    by_tier: dict[str, list[GoldItem]] = {}
+    by_severity: dict[str, list[GoldItem]] = {}
+    for item in gold:
+        for name in item.classes:
+            by_class.setdefault(name, []).append(item)
+        by_tier.setdefault(item.tier, []).append(item)
+        by_severity.setdefault(item.severity, []).append(item)
+
+    unstated = [item for item in gold if UNSTATED_CLASS in item.classes]
+    displaced = [item for item in gold if DISPLACED_CLASS in item.classes]
+
+    addressable_pair = None
+    if addressable_ids is not None:
+        wanted = set(addressable_ids)
+        addressable_pair = _pair(
+            "addressable", [item for item in gold if item.id in wanted], report, if_asserted
+        )
+
+    return AbstentionCost(
+        asserted_findings=asserted_findings,
+        abstained_findings=abstained_findings,
+        overall=_pair("overall", gold, report, if_asserted),
+        weighted_value=_weighted_recall(gold, report),
+        weighted_value_if_asserted=_weighted_recall(gold, if_asserted),
+        unstated=_pair(UNSTATED_CLASS, unstated, report, if_asserted),
+        displaced=_pair(DISPLACED_CLASS, displaced, report, if_asserted),
+        addressable=addressable_pair,
+        by_class=[
+            _pair(key, items, report, if_asserted) for key, items in sorted(by_class.items())
+        ],
+        by_tier=[_pair(key, items, report, if_asserted) for key, items in sorted(by_tier.items())],
+        by_severity=[
+            _pair(key, items, report, if_asserted) for key, items in sorted(by_severity.items())
+        ],
+    )
+
+
+# What a per-item row says happened. "partial" is not one of the matcher's own gold-item
+# outcomes: a partially answered item IS a miss for recall, and this vocabulary keeps the
+# reason visible — a finding cited the clause and said the wrong kind of thing about it,
+# which is a different problem from nothing citing the clause at all.
+ItemOutcome = Literal["match", "output_miss", "partial", "miss"]
+
+
+class AddressableOutcome(BaseModel):
+    """One gold item the detectors could in principle answer, and what actually happened."""
+
+    model_config = ConfigDict(frozen=True)
+
+    gold_id: str = Field(min_length=1)
+    classes: list[str]
+    severity: Severity
+    outcome: ItemOutcome
+    demands: list[str] = Field(
+        default_factory=list, description="Outputs this item requires beyond the finding."
+    )
+    unemitted_demands: list[str] = Field(
+        default_factory=list,
+        description="Of `demands`, the ones no registered detector emits at all. An item "
+        "with any of these cannot reach MATCH however well the detectors read the clause.",
+    )
+    blocked_by: str = Field(
+        default="", description="Why it is not a MATCH, in words. Empty when it is one."
+    )
+
+    @computed_field
+    @property
+    def reachable(self) -> bool:
+        """Whether a MATCH is possible today, or is waiting on an output nobody emits."""
+        return not self.unemitted_demands
+
+
+class Addressability(BaseModel):
+    """How many scored items the detectors that exist could answer, and what stops them.
+
+    Recall's denominator is every scored item, which is the right denominator for the
+    product and the wrong one for reading a single step's result. This states the other
+    one beside it: of the scored items, how many are addressable at all, and of those, how
+    many are held back by a missing output rather than by a detector that did not fire.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    scored_total: int = Field(ge=0, description="Every scored gold item — recall's denominator.")
+    emitted_finding_types: list[str]
+    emitted_outputs: list[str] = Field(
+        description="Output names some registered detector actually produces. Empty is a "
+        "real answer and the one that held in the first scored run."
+    )
+    items: list[AddressableOutcome] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def total(self) -> int:
+        """Items whose classes map to a finding type some registered detector emits."""
+        return len(self.items)
+
+    @computed_field
+    @property
+    def found(self) -> int:
+        """Addressable items fully answered."""
+        return sum(1 for item in self.items if item.outcome == "match")
+
+    @computed_field
+    @property
+    def reachable_total(self) -> int:
+        """Addressable items demanding no output that nothing emits — today's MATCH ceiling."""
+        return sum(1 for item in self.items if item.reachable)
+
+    @computed_field
+    @property
+    def blocked_on_outputs(self) -> int:
+        """Addressable items that cannot MATCH until some output is produced at all."""
+        return self.total - self.reachable_total
+
+    @computed_field
+    @property
+    def recall(self) -> float:
+        """Found over addressable. 0.0 over nothing addressable, never an error."""
+        return self.found / self.total if self.total else 0.0
+
+    @computed_field
+    @property
+    def recall_reachable(self) -> float:
+        """Found over the items a MATCH is actually possible for."""
+        return self.found / self.reachable_total if self.reachable_total else 0.0
+
+
+def addressability(
+    gold: Sequence[GoldItem],
+    report: MatchReport,
+    *,
+    emitted_finding_types: Collection[str],
+    emitted_outputs: Collection[str] = (),
+) -> Addressability:
+    """Which scored items the registered detectors could answer, and what blocked each one.
+
+    `emitted_finding_types` and `emitted_outputs` are configuration, supplied by whichever
+    application registered the detectors. This module does not know what is wired up and
+    must not guess: a hardcoded list here would go stale the moment a detector is added and
+    would then overstate the ceiling, which is the one direction it must not be wrong in.
+    """
+    emitted = set(emitted_finding_types)
+    produced = set(emitted_outputs)
+
+    matched = {assignment.gold_id: assignment for assignment in report.matches}
+    missed_outputs = {assignment.gold_id: assignment for assignment in report.output_misses}
+    anchored_wrongly: dict[str, list[str]] = {}
+    for partial in report.partials:
+        for gold_id in partial.gold_ids:
+            anchored_wrongly.setdefault(gold_id, []).append(partial.finding_type)
+
+    rows: list[AddressableOutcome] = []
+    for item in sorted(gold, key=lambda entry: entry.id):
+        if not (allowed_finding_types(item) & emitted):
+            continue
+        demands = list(item.expected_outputs)
+        unemitted = [name for name in demands if name not in produced]
+
+        if item.id in matched:
+            outcome: ItemOutcome = "match"
+            blocked = ""
+        elif item.id in missed_outputs:
+            outcome = "output_miss"
+            absent = ", ".join(missed_outputs[item.id].missing_outputs)
+            blocked = f"output(s) absent: {absent}"
+        elif item.id in anchored_wrongly:
+            outcome = "partial"
+            types = ", ".join(sorted(set(anchored_wrongly[item.id])))
+            blocked = f"wrong finding_type: {types}"
+        else:
+            outcome = "miss"
+            blocked = "no finding cited this clause"
+
+        rows.append(
+            AddressableOutcome(
+                gold_id=item.id,
+                classes=list(item.classes),
+                severity=item.severity,
+                outcome=outcome,
+                demands=demands,
+                unemitted_demands=unemitted,
+                blocked_by=blocked,
+            )
+        )
+
+    return Addressability(
+        scored_total=len(gold),
+        emitted_finding_types=sorted(emitted),
+        emitted_outputs=sorted(produced),
+        items=rows,
+    )
+
+
 class Precisions(BaseModel):
     """Both precisions, because neither may be quoted alone.
 
@@ -199,6 +515,19 @@ class ScoreCard(BaseModel):
     unmatched: int = Field(ge=0)
     misses: int = Field(ge=0)
 
+    abstention: AbstentionCost | None = Field(
+        default=None,
+        description="What the confidence threshold cost, when the caller supplied a match "
+        "report over the withheld findings too. None when nobody did, and the report then "
+        "prints no delta rather than implying abstention cost nothing.",
+    )
+    addressable: Addressability | None = Field(
+        default=None,
+        description="The ceiling behind `recall_overall`, when the caller said which "
+        "finding types and outputs are actually wired up. None when nobody said, and the "
+        "report then prints no ceiling rather than inventing one.",
+    )
+
     @property
     def passed_gate(self) -> str:
         """The gate as the word a report prints."""
@@ -224,6 +553,10 @@ def score(
     report: MatchReport,
     true_new: Sequence[str] = (),
     pending: Sequence[str] = (),
+    emitted_finding_types: Collection[str] | None = None,
+    emitted_outputs: Collection[str] = (),
+    if_asserted: MatchReport | None = None,
+    abstained_findings: int = 0,
 ) -> ScoreCard:
     """Compute every figure from a match report and the gold items behind it.
 
@@ -231,9 +564,30 @@ def score(
     `excluded` is passed only so the report can say how many were left out. `true_new` and
     `pending` come from `adjudication`; with neither, adjudicated precision equals what a
     run with no human review can honestly claim.
+
+    `emitted_finding_types` says which finding types the detectors actually registered by
+    the caller can produce, and `emitted_outputs` which of a gold item's `expects_*`
+    artefacts any of them carries. Give them and the card states recall's ceiling beside
+    recall. Leave them out and it states none — better than a ceiling this module guessed.
+
+    `if_asserted` is a match report built over the asserted findings **and** the withheld
+    ones. Give it and every recall figure gets a second reading beside it and a delta: what
+    the threshold cost. Leave it out and the card carries none, which is the right default —
+    a run that reports no delta has not measured one, and that is different from measuring
+    zero.
     """
     matched = report.matched_gold_ids
     confirmed_new = set(true_new)
+    reachable = (
+        None
+        if emitted_finding_types is None
+        else addressability(
+            gold,
+            report,
+            emitted_finding_types=emitted_finding_types,
+            emitted_outputs=emitted_outputs,
+        )
+    )
 
     by_class: dict[str, list[GoldItem]] = {}
     for item in gold:
@@ -292,4 +646,19 @@ def score(
         duplicates=len(report.duplicates),
         unmatched=len(report.unmatched),
         misses=len(report.misses),
+        addressable=reachable,
+        abstention=(
+            None
+            if if_asserted is None
+            else abstention_cost(
+                gold,
+                report,
+                if_asserted,
+                asserted_findings=len(finding_ids),
+                abstained_findings=abstained_findings,
+                addressable_ids=(
+                    None if reachable is None else [row.gold_id for row in reachable.items]
+                ),
+            )
+        ),
     )

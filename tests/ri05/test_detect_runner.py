@@ -20,6 +20,7 @@ from req_core.extraction import EXTRACT_PURPOSE, ClauseReading, PageReading
 from ri05_tender.detect.config import CONFIDENCE_THRESHOLD, ORDINAL_SCALES, SEVERITY_POLICY
 from ri05_tender.eval.findings_run import (
     DETECTOR_TO_FINDING_TYPE,
+    UNMATCHED_EXAMPLES_PER_DETECTOR,
     as_eval_finding,
     render_markdown,
     run,
@@ -262,3 +263,81 @@ def test_an_extraction_of_a_different_corpus_is_refused() -> None:
 
     with pytest.raises(ValueError, match="some-other-tender"):
         run(KESSLER_POINT, scripted, extraction=foreign)
+
+
+# --- the three things the first scored run could not answer ---------------------------------
+
+
+def test_the_report_states_the_ceiling_beside_the_recall(result) -> None:  # noqa: ANN001
+    """Recall over every scored item and recall over the addressable ones, on one page."""
+    rendered = render_markdown(result)
+
+    assert "Recall over addressable items" in rendered
+    assert "What the detectors could answer at all" in rendered
+    assert "Every addressable item" in rendered
+    assert result.card.addressable is not None
+    assert result.card.addressable.total == 32
+    assert result.card.addressable.scored_total == 186
+
+
+def test_every_addressable_item_gets_a_row_naming_what_blocked_it(result) -> None:  # noqa: ANN001
+    card = result.card.addressable
+    assert card is not None
+    assert len(card.items) == 32
+
+    for item in card.items:
+        assert item.gold_id and item.classes and item.severity
+        if item.outcome == "match":
+            assert item.blocked_by == ""
+        else:
+            assert item.blocked_by, f"{item.gold_id} is not a match and says nothing about why"
+
+    rendered = render_markdown(result)
+    for item in card.items:
+        assert f"`{item.gold_id}`" in rendered
+
+
+def test_the_ceiling_counts_the_split_bound_items_as_reachable(result) -> None:  # noqa: ANN001
+    """Five items demand only a split, and the splitter's own lineage now reaches the scorer.
+
+    This test asserted the opposite until `as_eval_finding` passed `children` through, and
+    it failing was the point: the ceiling and `EMITTED_OUTPUTS` are one fact in two places.
+    """
+    card = result.card.addressable
+    assert card is not None
+
+    split_only = [item for item in card.items if item.demands == ["split_children"]]
+    assert len(split_only) == 5
+    assert all(item.reachable for item in split_only), "nothing about them is unemitted now"
+    assert all(not item.unemitted_demands for item in split_only)
+
+    assert card.reachable_total == 10, "five demanding nothing, plus these five"
+    assert card.blocked_on_outputs == 22
+
+    # The one item demanding a split AND a checklist entry stays out: half an answer is not
+    # an answer, and `checklist_entry` is still emitted by nothing.
+    both = [item for item in card.items if "checklist_entry" in item.demands]
+    assert len(both) == 1
+    assert both[0].unemitted_demands == ["checklist_entry"]
+    assert not both[0].reachable
+
+
+def test_the_unmatched_findings_are_grouped_and_sampled_not_adjudicated(result) -> None:  # noqa: ANN001
+    rendered = render_markdown(result)
+
+    assert "## Unmatched findings" in rendered
+    assert "example(s) per detector" in rendered
+    # Grouped two ways, as a reading needs.
+    assert "| Detector | Unmatched |" in rendered
+    assert "| Document | Unmatched |" in rendered
+    # Quoted with the clause and the claim, so the reading can be made from the page.
+    assert "- clause:" in rendered
+    assert "- claimed:" in rendered
+    # And nothing here rules on any of them.
+    assert "nothing below rules on any of them" in rendered
+
+
+def test_no_more_than_the_configured_number_of_examples_per_detector(result) -> None:  # noqa: ANN001
+    """A report that quoted all 357 is a report nobody reads."""
+    rendered = render_markdown(result)
+    assert rendered.count("- clause:") <= UNMATCHED_EXAMPLES_PER_DETECTOR * len(DETECTORS)

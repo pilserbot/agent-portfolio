@@ -131,24 +131,32 @@ jobs:
         run: uv sync --all-packages --locked
 
       # RI05_FULL_EVAL gates the 301-clause extraction pass, on the same expression that
-      # chooses the full gold set below: a push to main, or a pull request labelled
-      # `full-eval`. Without it the extraction smoke test still runs — one page, one call —
-      # so every pull request proves the wire is connected without paying for a measurement
-      # nobody asked for. `-s` because the pass prints its ledger, and a measurement that
-      # only exists in a downloadable artifact is one nobody reads.
+      # chooses the full gold set below: the `full-eval` label, and nothing else.
+      #
+      # MERGING MUST NOT COST MONEY. This read `github.event_name == 'push' || …` until the
+      # push arm was removed, so every merge to main fired the full paid pass — about $2 a
+      # merge, charged for a measurement nobody had asked for, at the moment somebody was
+      # least likely to be watching for it. Spending is now something a person opts into by
+      # labelling a pull request, which is the only place the decision to spend belongs.
+      #
+      # Without the label the extraction smoke test still runs — one page, one call — so
+      # every pull request proves the wire is connected for a few cents. `-s` because the
+      # pass prints its ledger, and a measurement that only exists in a downloadable
+      # artifact is one nobody reads.
       - name: Integration tests
         if: steps.guard.outputs.available == 'true'
         env:
-          RI05_FULL_EVAL: ${{ github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'full-eval') }}
+          RI05_FULL_EVAL: ${{ contains(github.event.pull_request.labels.*.name, 'full-eval') }}
         run: uv run pytest -m integration -s
 
-      # The full gold set runs on pushes to main and on pull requests labelled `full-eval`;
-      # every other pull request gets a 20-item sample.
+      # The full gold set runs on pull requests labelled `full-eval`; every other run gets a
+      # 20-item sample. A push carries no labels, so a merge takes the sample — see the note
+      # above: merging must not cost money.
       - name: Determine evaluation scope
         id: scope
         if: steps.guard.outputs.available == 'true'
         env:
-          FULL_EVAL: ${{ github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'full-eval') }}
+          FULL_EVAL: ${{ contains(github.event.pull_request.labels.*.name, 'full-eval') }}
         run: |
           if [ "$FULL_EVAL" = "true" ]; then
             echo "args=" >> "$GITHUB_OUTPUT"

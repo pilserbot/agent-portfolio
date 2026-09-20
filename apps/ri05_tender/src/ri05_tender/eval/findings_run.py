@@ -56,6 +56,7 @@ from ri05_tender.eval.loader import load_gold
 from ri05_tender.eval.matcher import MatchReport, match_findings, source_text
 from ri05_tender.eval.metrics import ScoreCard, score
 from ri05_tender.eval.models import Finding as EvalFinding
+from ri05_tender.eval.models import FindingOutputs
 from ri05_tender.eval.report import render_markdown as render_score_card
 from ri05_tender.extract.config import ITB_2_1_POLICY, KESSLER_POINT_CLAUSE_STYLE
 from ri05_tender.extract.gate import extraction_corpus
@@ -64,10 +65,17 @@ from ri05_tender.tender.models import TenderPackage
 
 __all__ = [
     "DETECTOR_TO_FINDING_TYPE",
+    "EMITTED_OUTPUTS",
+    "UNMATCHED_EXAMPLES_PER_DETECTOR",
     "DetectionRun",
     "as_eval_finding",
     "run",
 ]
+
+# How many unmatched findings per detector the report quotes in full. Enough to judge
+# whether a detector that fired two hundred times is reading real defects or firing on
+# everything; few enough that the report stays a page somebody reads.
+UNMATCHED_EXAMPLES_PER_DETECTOR = 5
 
 # Where the two vocabularies differ. Five detector names are already the finding types the
 # class map uses; `unverifiable` is `unverifiable_requirement` there. Stated once, here,
@@ -82,8 +90,26 @@ DETECTOR_TO_FINDING_TYPE: dict[str, str] = {
 }
 
 
+# Which of a gold item's `expects_*` artefacts the detectors actually carry. `split_children`
+# only: `as_eval_finding` passes an `atomicity_split` finding's children through, and nothing
+# produces a clarification question, a price impact, an alternative, a checklist entry or a
+# no-bid recommendation yet.
+#
+# This was empty until the children were plumbed through, and the emptiness was measured
+# before it was fixed: five addressable gold items demand `split_children` and nothing else,
+# and they scored OUTPUT_MISS not because no detector could see the compound clause but
+# because the adapter dropped the lineage the splitter had already produced. The ceiling in
+# `metrics.Addressability` moves with this constant, which is why they change together.
+EMITTED_OUTPUTS: frozenset[str] = frozenset({"split_children"})
+
+
 def as_eval_finding(finding: CoreFinding) -> EvalFinding:
     """Convert a detector's finding into the record this project's matcher scores.
+
+    `split_children` carries the lineage straight through. The splitter already produced
+    the requirement ids a compound clause was separated into and the detector already holds
+    them; dropping them here was the whole reason five gold items demanding only a split
+    scored OUTPUT_MISS.
 
     `recovered_statement` is the finding's own statement, which is written by Python from
     the claims rather than quoted from the page — so it satisfies the matcher's rule that a
@@ -99,6 +125,11 @@ def as_eval_finding(finding: CoreFinding) -> EvalFinding:
         recovered_statement=finding.statement,
         evidence=[finding.source],
         confidence=finding.confidence,
+        # The split lineage the detector already holds. `children` is populated only on an
+        # `atomicity_split` finding — `req_core.findings.Finding` refuses children on any
+        # other detector and refuses a split carrying fewer than two — so this needs no
+        # branch on the detector name: everywhere else it is already empty.
+        outputs=FindingOutputs(split_children=list(finding.children)),
     )
 
 
@@ -179,8 +210,17 @@ def run(
     # a miss and not scored as a hit — it is scored as nothing, which is what abstaining
     # means, and it is reported beside the recall so the trade is visible.
     findings = [as_eval_finding(finding) for finding in detection.findings]
+    withheld = [as_eval_finding(finding) for finding in detection.abstained]
     gold = load_gold(package)
-    report = match_findings(findings, gold.scored, source=source_text(package))
+    source = source_text(package)
+    report = match_findings(findings, gold.scored, source=source)
+
+    # The same scoring over the withheld findings as well. This is not a second opinion
+    # about quality and nothing it produces is credited: it exists so the delta between the
+    # two says what the threshold cost. A detector that located a planted defect and was
+    # withheld scores identically to one that never saw it, and only this separates them.
+    if_asserted = match_findings(findings + withheld, gold.scored, source=source)
+
     card = score(
         tender_name=package.name,
         gold=gold.scored,
@@ -188,6 +228,12 @@ def run(
         finding_ids=[finding.finding_id for finding in findings],
         report=report,
         pending=report.unmatched,
+        # The ceiling, stated from what is registered rather than assumed. Both come from
+        # this module because this module is what wires the detectors to the scorer.
+        emitted_finding_types=frozenset(DETECTOR_TO_FINDING_TYPE.values()),
+        emitted_outputs=EMITTED_OUTPUTS,
+        if_asserted=if_asserted,
+        abstained_findings=len(withheld),
     )
 
     written: Path | None = None
@@ -243,6 +289,74 @@ def render_markdown(result: DetectionRun) -> str:
         "",
         render_score_card(result.card),
     ]
+    lines += _unmatched_section(result)
     if result.queue_path is not None:
         lines += [f"Adjudication queue written to `{result.queue_path}`.", ""]
     return "\n".join(lines)
+
+
+def _unmatched_section(result: DetectionRun) -> list[str]:
+    """The findings that cite nothing in the answer key, grouped and sampled.
+
+    The first scored run reported 410 findings and 357 of them matched nothing. That number
+    means one of two very different things — the detectors are surfacing real defects the
+    gold set never planted, or they are firing on everything — and the aggregate cannot tell
+    them apart. Only the clause text and the claim made about it can, and that is a reading a
+    human does.
+
+    So this prints the material for that reading and draws no conclusion from it. Nothing
+    here adjudicates: an unmatched finding is neither credited nor counted wrong by being
+    quoted. It is in the report rather than only in the adjudication queue because the queue
+    is a file in a CI artifact, and a measurement nobody can open is one nobody reads.
+    """
+    unmatched = set(result.match.unmatched)
+    if not unmatched:
+        return ["## Unmatched findings", "", "_Every finding cited something in the key._", ""]
+
+    by_detector: dict[str, list[CoreFinding]] = {}
+    by_document: dict[str, int] = {}
+    for finding in result.detection.findings:
+        if finding.finding_id not in unmatched:
+            continue
+        by_detector.setdefault(finding.detector, []).append(finding)
+        by_document[finding.source.document] = by_document.get(finding.source.document, 0) + 1
+
+    lines = [
+        "## Unmatched findings",
+        "",
+        f"**{len(unmatched)}** of {len(result.detection.findings)} reported finding(s) cite "
+        f"nothing in the answer key. They are counted against strict precision and left out "
+        f"of adjudicated precision, and nothing below rules on any of them.",
+        "",
+        "| Detector | Unmatched |",
+        "|---|---:|",
+        *(
+            f"| `{name}` | {len(found)} |"
+            for name, found in sorted(by_detector.items(), key=lambda pair: -len(pair[1]))
+        ),
+        "",
+        "| Document | Unmatched |",
+        "|---|---:|",
+        *(
+            f"| `{name}` | {count} |"
+            for name, count in sorted(by_document.items(), key=lambda pair: -pair[1])
+        ),
+        "",
+        f"### {UNMATCHED_EXAMPLES_PER_DETECTOR} example(s) per detector",
+        "",
+        "_The clause as the tender writes it, and what the detector said about it. Read them "
+        "together: a detector firing on a clause that really does state an unbounded quantity "
+        "is finding something the gold set did not plant, and one firing on a clause that "
+        "bounds everything it names is firing on everything._",
+        "",
+    ]
+    for name, found in sorted(by_detector.items()):
+        lines += [f"**`{name}`** — {len(found)} unmatched", ""]
+        for finding in found[:UNMATCHED_EXAMPLES_PER_DETECTOR]:
+            lines += [
+                f"- `{finding.requirement_id}` (confidence {finding.confidence:.2f})",
+                f"  - clause: _{finding.source.quote.strip()}_",
+                f"  - claimed: {finding.statement}",
+            ]
+        lines.append("")
+    return lines
