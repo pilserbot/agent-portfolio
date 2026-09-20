@@ -63,8 +63,11 @@ SPURIOUS = "spurious"
 __all__ = [
     "SEVERITY_WEIGHTS",
     "Breakdown",
+    "CeilingChain",
+    "CeilingLink",
     "Precisions",
     "ScoreCard",
+    "ceiling_chain",
     "score",
 ]
 
@@ -443,6 +446,158 @@ def addressability(
     )
 
 
+class CeilingLink(BaseModel):
+    """One step of the chain from every planted defect to what this run could match."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(min_length=1)
+    count: int = Field(ge=0, description="Items still standing after this condition.")
+    removed: int = Field(ge=0, description="Items this condition alone took out.")
+    note: str = Field(min_length=1, description="What the condition is, and why it exists.")
+    measured_after_the_run: bool = Field(
+        default=False,
+        description="True for a link that is a property of what happened rather than of "
+        "the configuration. Marked because the rest of the chain can be computed before a "
+        "single call is made, and this one cannot.",
+    )
+
+
+class CeilingChain(BaseModel):
+    """Every scored item, narrowed step by step to what this configuration could match.
+
+    Recall's denominator is every planted defect and that is the right denominator for the
+    product. It is the wrong one for reading a single step's result, and the difference
+    between them is not one number — it is five, each with its own cause and its own fix.
+    Printing them as a chain is what lets a zero be read: an item outside the corpus is a
+    scope decision, an item with no clause-shaped reference is an answer-key problem, an
+    item no detector family addresses is unbuilt capability, and an item withheld by the
+    threshold is a defect that was found and not asserted. Four different things.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    links: list[CeilingLink] = Field(min_length=1)
+
+    @computed_field
+    @property
+    def scored_total(self) -> int:
+        """Where the chain starts: every scored gold item."""
+        return self.links[0].count
+
+    @computed_field
+    @property
+    def ceiling(self) -> int:
+        """Where it ends: items this configuration could actually have matched."""
+        return self.links[-1].count
+
+
+def ceiling_chain(
+    gold: Sequence[GoldItem],
+    *,
+    corpus_documents: Collection[int],
+    clause_identifiers: Collection[str],
+    emitted_finding_types: Collection[str],
+    emitted_outputs: Collection[str] = (),
+    withheld_gold_ids: Collection[str] | None = None,
+) -> CeilingChain:
+    """Narrow the scored items by each condition in turn, counting what each one removes.
+
+    Every argument is configuration supplied by whoever wired the run up. This module does
+    not know which documents were read, which clause identifiers the segmenter produced or
+    which detectors are registered, and must not guess: a value hardcoded here would go
+    stale the moment a corpus widens and would then overstate the ceiling, which is the one
+    direction it must not be wrong in.
+
+    `withheld_gold_ids` are the items a withheld finding would have matched. Give them and
+    the chain carries a final link for the abstention threshold; leave them out and it stops
+    one step earlier rather than implying the threshold cost nothing.
+    """
+    documents = set(corpus_documents)
+    identifiers = {name.upper() for name in clause_identifiers}
+    emitted = set(emitted_finding_types)
+    produced = set(emitted_outputs)
+
+    standing = list(gold)
+    links = [
+        CeilingLink(
+            name="scored items",
+            count=len(standing),
+            removed=0,
+            note="Every planted defect the answer key scores. Recall's denominator, and the "
+            "only figure here that is about the product rather than about this step.",
+        )
+    ]
+
+    def narrow(name: str, keep: list[GoldItem], note: str, *, after_run: bool = False) -> None:
+        links.append(
+            CeilingLink(
+                name=name,
+                count=len(keep),
+                removed=len(standing) - len(keep),
+                note=note,
+                measured_after_the_run=after_run,
+            )
+        )
+
+    # The document an item sits in comes before the reference it cites, and the order is a
+    # choice worth stating: the matcher anchors by clause identifier, not by document, so an
+    # item in a document nobody read can still be matched by a finding about a clause
+    # elsewhere that it cites. Measured over Kessler Point, two items are in that position
+    # and neither is addressable by any registered detector, so this order costs nothing
+    # today. It is the conservative order — it can understate the ceiling and never overstate
+    # it — and if that pair ever grows the note beside the link is where it will show.
+    keep = [item for item in standing if item.document in documents]
+    narrow(
+        "in a document the detection corpus reads",
+        keep,
+        "A defect on a page no pass was shown cannot be found by any detector. A scope "
+        "decision, not a capability, and it moves when the corpus does.",
+    )
+    standing = keep
+
+    keep = [item for item in standing if any(ref.upper() in identifiers for ref in item.refs)]
+    narrow(
+        "carrying a reference the segmenter produces as a clause id",
+        keep,
+        "The matcher anchors a finding to an item by clause identifier. An item whose refs "
+        "name no clause the segmenter found cannot be matched however well it is detected — "
+        "an answer-key problem, not a detector one.",
+    )
+    standing = keep
+
+    keep = [item for item in standing if allowed_finding_types(item) & emitted]
+    narrow(
+        "addressable by a registered detector family",
+        keep,
+        "The item's classes map to a finding type some registered detector emits. What is "
+        "removed here is unbuilt capability, and it is the honest reading of most of the gap.",
+    )
+    standing = keep
+
+    keep = [item for item in standing if not set(item.expected_outputs) - produced]
+    narrow(
+        "not blocked on an output no detector yet emits",
+        keep,
+        "An item demanding a clarification question, a price impact or an alternative cannot "
+        "reach MATCH until something produces one, however well the clause was read.",
+    )
+    standing = keep
+
+    if withheld_gold_ids is not None:
+        withheld = set(withheld_gold_ids)
+        keep = [item for item in standing if item.id not in withheld]
+        narrow(
+            "not withheld by the abstention threshold",
+            keep,
+            "A finding located the defect and scored below the confidence threshold, so it "
+            "was routed to a human instead of asserted. Found, and not said.",
+            after_run=True,
+        )
+
+    return CeilingChain(links=links)
+
+
 class Precisions(BaseModel):
     """Both precisions, because neither may be quoted alone.
 
@@ -527,6 +682,13 @@ class ScoreCard(BaseModel):
         "finding types and outputs are actually wired up. None when nobody said, and the "
         "report then prints no ceiling rather than inventing one.",
     )
+    ceiling: CeilingChain | None = Field(
+        default=None,
+        description="The same ceiling as a chain: every condition between a planted defect "
+        "and a finding that could match it, each with what it removed. `addressable` is two "
+        "of these links; this is all of them, and the extra ones — the corpus and the "
+        "answer key's own references — are the ones nobody was counting.",
+    )
 
     @property
     def passed_gate(self) -> str:
@@ -557,6 +719,7 @@ def score(
     emitted_outputs: Collection[str] = (),
     if_asserted: MatchReport | None = None,
     abstained_findings: int = 0,
+    ceiling: CeilingChain | None = None,
 ) -> ScoreCard:
     """Compute every figure from a match report and the gold items behind it.
 
@@ -569,6 +732,10 @@ def score(
     the caller can produce, and `emitted_outputs` which of a gold item's `expects_*`
     artefacts any of them carries. Give them and the card states recall's ceiling beside
     recall. Leave them out and it states none — better than a ceiling this module guessed.
+
+    `ceiling` is the narrowing chain, built by the caller because only the caller knows
+    which documents were read and which clause identifiers the segmenter produced. Given, it
+    is printed above every recall figure; omitted, the report prints no chain.
 
     `if_asserted` is a match report built over the asserted findings **and** the withheld
     ones. Give it and every recall figure gets a second reading beside it and a delta: what
@@ -647,6 +814,7 @@ def score(
         unmatched=len(report.unmatched),
         misses=len(report.misses),
         addressable=reachable,
+        ceiling=ceiling,
         abstention=(
             None
             if if_asserted is None

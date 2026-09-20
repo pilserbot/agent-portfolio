@@ -28,7 +28,7 @@ from req_core.clauses import segment
 from req_core.corpus import SourceCorpus, corpus_from
 from ri05_tender.eval.loader import GoldSet, load_gold
 from ri05_tender.eval.models import GoldItem
-from ri05_tender.extract.gate import extraction_corpus
+from ri05_tender.scope import detection_corpus, gate_corpus
 from ri05_tender.tender.loader import load_tender
 from ri05_tender.tender.models import TenderPackage
 
@@ -40,17 +40,25 @@ KESSLER_POINT = Path("data/tenders/kessler_point")
 CLAUSE_REFERENCE = re.compile(r"\b([A-Z]{1,4}-[A-Z]?\.?\d+(?:\.\d+)*)")
 
 # Measured against the committed PDFs with the repo's own loader and segmenter, after the
-# re-derivation. Before it: 49 and 138. The gap between the two figures is the corpus, not
-# the answer key — extraction reads Documents 4, 5 and 6, and the other ten documents hold
-# clauses the gold set legitimately references.
-ANCHORING_IN_EXTRACTION_CORPUS = 66
+# re-derivation. Before it: 49 in the gate scope and 138 across every document.
+#
+# The three figures are three different questions and the gaps between them are the point.
+# The gate scope is Documents 4, 5 and 6 — the comparison against the Compliance Matrix and
+# nothing else. Detection reads ten documents, and that widening is worth 85 items. The last
+# figure counts the matrix and the two spreadsheets too, and the single item between it and
+# the detection scope is D9-01, whose `TS-B.72` exists only as a matrix row: the matrix
+# indexes a requirement that is in no specification, which is exactly what the gate's
+# "absent from the documents" list is for.
+ANCHORING_IN_GATE_CORPUS = 66
+ANCHORING_IN_DETECTION_CORPUS = 151
 ANCHORING_IN_EVERY_DOCUMENT = 152
 
-# The nine demo-set items all anchor somewhere in the package. Five of them sit in the three
-# documents extraction reads; the other four are in Documents 2 and 3, so no detector can
-# reach them until the corpus widens, which is a scope decision and not this test's.
+# The nine demo-set items all anchor somewhere in the package. Five anchor in the gate's
+# three documents; the other four are in Documents 2 and 3, and the corpus widening is what
+# brings them within reach — which is most of why it was done.
 DEMO_ITEMS = 9
-DEMO_ANCHORING_IN_EXTRACTION_CORPUS = 5
+DEMO_ANCHORING_IN_GATE_CORPUS = 5
+DEMO_ANCHORING_IN_DETECTION_CORPUS = 9
 
 # Items whose `refs` the re-derivation changed. Each keeps its previous value in
 # `refs_prior`, so the claim the answer key used to make is still on the record.
@@ -88,8 +96,13 @@ def anchoring(items: list[GoldItem], identifiers: set[str]) -> list[GoldItem]:
 
 
 @pytest.fixture(scope="module")
-def extraction_identifiers(package: TenderPackage) -> set[str]:
-    return clause_identifiers(extraction_corpus(package))
+def gate_identifiers(package: TenderPackage) -> set[str]:
+    return clause_identifiers(gate_corpus(package))
+
+
+@pytest.fixture(scope="module")
+def detection_identifiers(package: TenderPackage) -> set[str]:
+    return clause_identifiers(detection_corpus(package))
 
 
 @pytest.fixture(scope="module")
@@ -103,15 +116,30 @@ def every_identifier(package: TenderPackage) -> set[str]:
     )
 
 
-def test_the_scored_items_anchoring_in_the_extraction_corpus(
-    gold: GoldSet, extraction_identifiers: set[str]
+def test_the_scored_items_anchoring_in_the_gate_corpus(
+    gold: GoldSet, gate_identifiers: set[str]
 ) -> None:
-    """The ceiling on what any detector over Documents 4, 5 and 6 could ever match."""
-    reached = anchoring(gold.scored, extraction_identifiers)
-    assert len(reached) == ANCHORING_IN_EXTRACTION_CORPUS, (
-        f"{len(reached)} of {len(gold.scored)} scored items anchor in the extraction corpus, "
-        f"not {ANCHORING_IN_EXTRACTION_CORPUS}. An item that anchors nowhere cannot be "
-        f"matched by any finding, so a fall here is recall lost before a detector runs."
+    """What a pass over only Documents 4, 5 and 6 could ever match — the old ceiling."""
+    reached = anchoring(gold.scored, gate_identifiers)
+    assert len(reached) == ANCHORING_IN_GATE_CORPUS, (
+        f"{len(reached)} of {len(gold.scored)} scored items anchor in the gate corpus, not "
+        f"{ANCHORING_IN_GATE_CORPUS}."
+    )
+
+
+def test_the_scored_items_anchoring_in_the_detection_corpus(
+    gold: GoldSet, detection_identifiers: set[str]
+) -> None:
+    """The ceiling that matters: what the detectors are actually shown.
+
+    An item that anchors nowhere in the corpus cannot be matched by any finding, so a fall
+    here is recall lost before a detector runs — and a corpus that silently narrows would
+    show up as detectors that got worse.
+    """
+    reached = anchoring(gold.scored, detection_identifiers)
+    assert len(reached) == ANCHORING_IN_DETECTION_CORPUS, (
+        f"{len(reached)} of {len(gold.scored)} scored items anchor in the detection corpus, "
+        f"not {ANCHORING_IN_DETECTION_CORPUS}."
     )
 
 
@@ -127,13 +155,17 @@ def test_the_scored_items_anchoring_anywhere_in_the_package(
 
 
 def test_every_demo_item_names_a_clause_that_exists(
-    gold: GoldSet, every_identifier: set[str], extraction_identifiers: set[str]
+    gold: GoldSet,
+    every_identifier: set[str],
+    detection_identifiers: set[str],
+    gate_identifiers: set[str],
 ) -> None:
     """The demo set is what gets shown, so an unanchorable item there is the worst kind."""
     demo = [item for item in gold.scored if item.demo_set]
     assert len(demo) == DEMO_ITEMS
     assert len(anchoring(demo, every_identifier)) == DEMO_ITEMS
-    assert len(anchoring(demo, extraction_identifiers)) == DEMO_ANCHORING_IN_EXTRACTION_CORPUS
+    assert len(anchoring(demo, detection_identifiers)) == DEMO_ANCHORING_IN_DETECTION_CORPUS
+    assert len(anchoring(demo, gate_identifiers)) == DEMO_ANCHORING_IN_GATE_CORPUS
 
 
 def test_the_re_derivation_kept_what_it_replaced(gold: GoldSet) -> None:

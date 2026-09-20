@@ -7,13 +7,19 @@ Authority believes it wrote — so the gate compares what extraction found again
 Authority indexed, and the comparison costs nothing to maintain.
 
 **Document 9 is not read during extraction, and that is enforced rather than remembered.**
-`extraction_corpus` builds a `req_core.corpus.SourceCorpus` from Documents 4, 5 and 6 and
-names the matrix in `withheld`; `SourceCorpus` refuses to be constructed holding a document
-it claims to have withheld, so the mistake is not representable rather than merely
-discouraged. `verify_scope` then re-checks after the fact that no requirement's anchor cites
-a document the corpus never held. The matrix is read only by `matrix_clause_ids`, which
-takes the package directly and is called by `compare` — after extraction has returned a
-frozen result it cannot feed back into.
+`ri05_tender.scope` builds every corpus and names the matrix in `withheld`; `SourceCorpus`
+refuses to be constructed holding a document it claims to have withheld, so the mistake is
+not representable rather than merely discouraged. `verify_scope` then re-checks after the
+fact that no requirement's anchor cites a document the corpus never held. The matrix is read
+only by `matrix_clause_ids`, which takes the package directly and is called by `compare` —
+after extraction has returned a frozen result it cannot feed back into.
+
+**The comparison is scoped here, not by whichever corpus produced the result.** Extraction
+now runs over the wider detection scope, so a result handed to `compare` carries clauses
+from documents the matrix was never about. `compare` therefore restricts itself to
+`GATE_DOCUMENT_IDS` explicitly — the three specifications the matrix covers — and says so in
+`MatrixComparison.scope`. Reading the whole result would turn every annex clause into a row
+"absent from the matrix", which is not a defect in anything.
 
 **The comparison is a defect detector as much as a gate**, which is why it is worth building
 this way rather than against a transcription. Each side means something different:
@@ -29,8 +35,8 @@ The gate does not decide which. It reports both lists in full, named, and a huma
 them — a number here would be a judgement dressed as a measurement.
 
 Deliberately does not: call a model (that is `req_core.extraction`, reached through a
-completion function this module never constructs), write a file, or convert either list into
-a score.
+completion function this module never constructs), write a file, decide which documents a
+pass reads (that is `ri05_tender.scope`), or convert either list into a score.
 """
 
 import re
@@ -39,34 +45,21 @@ from collections.abc import Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from req_core.contracts import ExtractionResult
-from req_core.corpus import CorpusError, SourceCorpus, corpus_from
+from req_core.corpus import SourceCorpus
+from ri05_tender.scope import GATE_DOCUMENT_IDS, MATRIX_DOCUMENT_ID, ScopeError, gate_corpus
 from ri05_tender.tender.models import TenderPackage
 
 __all__ = [
-    "EXTRACTION_DOCUMENT_IDS",
+    "GATE_DOCUMENT_IDS",
     "MATRIX_DOCUMENT_ID",
     "GateError",
     "MatrixComparison",
-    "extraction_corpus",
+    "gate_corpus",
     "matrix_clause_ids",
     "compare",
     "render_markdown",
     "verify_scope",
 ]
-
-# The specifications extraction reads. Documents 1, 2, 3, 7, 8 and 10-13 are out of scope for
-# this pass, not withheld: they are process, commercial and annex material, and nothing is
-# being kept from extraction by leaving them out.
-EXTRACTION_DOCUMENT_IDS: tuple[str, ...] = (
-    "04_Technical_Specification",
-    "05_Integration_and_Interface_Specification",
-    "06_Cybersecurity_and_Information_Security",
-)
-
-# The one document that IS withheld, and the only one named as such. It is the index of the
-# answers: reading it would let extraction produce the right clause list without reading a
-# specification at all, and the gate below would then be measuring a copy.
-MATRIX_DOCUMENT_ID = "09_Compliance_Matrix"
 
 # A matrix row's first cell, when it is a clause reference. The sheet also carries header
 # rows, the bidder block, and a literal "TS-x.x" example in the column guide; none of them
@@ -76,34 +69,12 @@ _ROW_IDENTIFIER = re.compile(r"^([A-Z]{1,4}-[A-Z]?\.?\d+(?:\.\d+)*)$")
 _CELL_SEPARATOR = "\t"
 
 
-class GateError(Exception):
-    """The gate cannot be run against this package as it stands."""
+class GateError(ScopeError):
+    """The gate cannot be run against this package as it stands.
 
-
-def extraction_corpus(
-    package: TenderPackage,
-    *,
-    include: Sequence[str] = EXTRACTION_DOCUMENT_IDS,
-    withhold: Sequence[str] = (MATRIX_DOCUMENT_ID,),
-) -> SourceCorpus:
-    """The documents extraction may read, with the matrix named as withheld.
-
-    `TenderDocument` and `DocumentPage` already satisfy `req_core`'s `DocumentLike` and
-    `PageLike` protocols structurally, so nothing is converted and `req_core` imports nothing
-    from this package. That is the whole of the coupling between them.
+    A subclass of `ScopeError` because building the corpus is the first thing the gate does
+    and a caller catching one thing for "this gate cannot run" should catch both.
     """
-    try:
-        return corpus_from(
-            package.documents,
-            name=package.name,
-            include=include,
-            withhold=withhold,
-            titles={document.document_id: document.title for document in package.documents},
-        )
-    except CorpusError as error:
-        raise GateError(
-            f"cannot build an extraction corpus for {package.name!r}: {error}"
-        ) from error
 
 
 def verify_scope(result: ExtractionResult, corpus: SourceCorpus) -> None:
@@ -160,6 +131,11 @@ class MatrixComparison(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     tender_name: str
+    scope: list[str] = Field(
+        description="The documents this comparison was made over. On the record because the "
+        "extraction behind it may have read more: a count whose scope is implicit is a "
+        "count somebody will read against the wrong denominator."
+    )
     extracted_count: int = Field(ge=0, description="Distinct clauses extracted from 4/5/6.")
     matrix_row_count: int = Field(ge=0, description="Rows in the matrix carrying a reference.")
     matrix_distinct_count: int = Field(ge=0, description="Distinct references among those rows.")
@@ -197,16 +173,28 @@ class MatrixComparison(BaseModel):
         )
 
 
-def compare(result: ExtractionResult, package: TenderPackage) -> MatrixComparison:
+def compare(
+    result: ExtractionResult,
+    package: TenderPackage,
+    *,
+    documents: Sequence[str] = GATE_DOCUMENT_IDS,
+) -> MatrixComparison:
     """Compare a finished extraction against the matrix it was not allowed to read.
 
     Takes the frozen `ExtractionResult`, so the matrix cannot reach extraction even by
     accident: by the time this function has the answers, the reading is over.
 
+    `documents` is the gate's own scope and defaults to the three specifications the matrix
+    covers. It is a parameter rather than whatever the result happened to be extracted from,
+    because extraction now runs over the wider detection scope: comparing an annex clause
+    against an index that was never about annexes would report a disagreement that is not
+    one. Extraction is per page, so this restriction produces exactly what a pass over only
+    these three documents would have.
+
     Compares clause identifiers and not the derived split children, because the matrix
     indexes what the document printed and children are this package's own subdivision of it.
     """
-    extracted = result.clause_ids
+    extracted = result.clause_ids_in(documents)
     rows = matrix_clause_ids(package)
     indexed = frozenset(rows)
 
@@ -216,6 +204,7 @@ def compare(result: ExtractionResult, package: TenderPackage) -> MatrixCompariso
 
     return MatrixComparison(
         tender_name=package.name,
+        scope=list(documents),
         extracted_count=len(extracted),
         matrix_row_count=len(rows),
         matrix_distinct_count=len(indexed),
@@ -240,11 +229,15 @@ def render_markdown(comparison: MatrixComparison, result: ExtractionResult) -> s
         "",
         f"Read **{', '.join(sorted(result.documents_seen))}**. "
         f"Withheld **{', '.join(sorted(result.withheld)) or 'nothing'}**.",
+        f"Compared over **{', '.join(comparison.scope)}** — the documents the matrix covers. "
+        f"The extraction behind this may have read more; the rows below that are about the "
+        f"comparison say so, and the rows about the pass say the pass.",
         f"Modality convention: `{result.policy_name}`.",
         "",
         "| | |",
         "|---|---:|",
-        f"| Clauses segmented | {result.clauses_read} |",
+        f"| Clauses segmented (whole pass) | {result.clauses_read} |",
+        f"| Clauses extracted in the compared scope | {comparison.extracted_count} |",
         f"| Clauses truncated at a page break | {result.clauses_truncated} |",
         f"| Requirements (clauses + split children) | {len(result.requirements)} |",
         f"| Atomic | {result.atomic_count} |",

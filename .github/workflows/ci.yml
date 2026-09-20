@@ -77,13 +77,16 @@ jobs:
     name: eval
     runs-on: ubuntu-latest
     # Headroom, not the fix. What used to overrun this job was a duplicated extraction: the
-    # findings run re-extracted the corpus the extraction gate had just extracted, 42 live
-    # calls where 28 do. That is fixed in the tests — one session-scoped extraction, handed
-    # to both — and the call counts are asserted there so a regression fails on a number
-    # instead of on a bill. This ceiling only keeps a slow page or a retried call from being
-    # cancelled mid-pass, which throws away calls already paid for; it is not load-bearing
-    # and raising it further would be treating a symptom. An unlabelled pull request runs
-    # the smoke test alone and finishes in about a minute.
+    # findings run re-extracted the corpus the extraction gate had just extracted. That is
+    # fixed in the tests — one session-scoped extraction, handed to both — and the call
+    # counts are asserted there so a regression fails on a number instead of on a bill.
+    #
+    # A labelled run now reads ten documents rather than three: 88 live calls over 691
+    # clauses, projected at about 41 minutes and $4.00 from the 17.5 minutes and $1.72 the
+    # three-document pass measured. 41 fits inside this ceiling with room, and the pass is
+    # deliberately not parallelised — if a real run overruns, the fix will be made against a
+    # measurement rather than against a projection. An unlabelled pull request runs the
+    # smoke test alone and finishes in about a minute.
     timeout-minutes: 60
     if: >-
       github.event_name == 'pull_request'

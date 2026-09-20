@@ -1,13 +1,21 @@
 """The live findings run: extract, detect, score, against the real tender and a real model.
 
-Needs ANTHROPIC_API_KEY and a network, and runs only on a push to `main` or a pull request
-labelled `full-eval` — the same `RI05_FULL_EVAL` gate as the extraction pass, set in
-`ci.yml` from the same expression that chooses the full gold set over a sample. There is no
+Needs ANTHROPIC_API_KEY and a network, and runs only on a pull request labelled `full-eval`
+— the same `RI05_FULL_EVAL` gate as the extraction pass, set in `ci.yml` from the same
+expression that chooses the full gold set over a sample. There is no
 smoke-test half here: `test_ri05_extraction` already proves the wire is connected on every
 pull request, and a second call proving it again would be paying twice for one fact.
 
-**Cost.** 28 calls: 14 for extraction and 14 for claims. The two passes ask different
-questions of the same pages, and a pipeline caching the first would pay for the second only.
+**Cost.** 88 calls: 44 for extraction and 44 for claims, one of each per page that carries
+a clause across the ten documents the detection scope reads. The two passes ask different
+questions of the same pages, so neither can be skipped; the extraction half is handed in by
+the session fixture, which is why the job pays 88 and not 132.
+
+The widening from three documents to ten is what these numbers are. 28 calls over 301
+clauses cost $1.72 and took 17.5 minutes; 88 calls over 691 clauses project to about $4.00
+and 41 minutes, which fits inside the job's 60-minute limit with room. There is no
+parallelism here on purpose: 41 minutes fits, and if a real run overruns the fix will be
+made against a measurement rather than a projection.
 
 The ledger is persisted the moment each pass returns, before any assertion and before any
 reporting object exists — see `ledger.persist_ledger` and the reason it is written that way.
@@ -36,12 +44,20 @@ FULL_EVAL_ENV = "RI05_FULL_EVAL"
 # Claims only: extraction arrives from the fixture already done. A different number is a
 # batching bug or a lost hand-in, not a surprise to absorb — and either one costs money, so
 # it is asserted rather than watched.
-EXPECTED_CALLS = 14
+# Every clause the detection scope holds — ten documents, 44 clause-bearing pages. Pinned
+# so a corpus that silently narrows fails here rather than reporting a better-looking recall
+# over fewer items.
+EXPECTED_CLAUSES = 691
+
+EXPECTED_CALLS = 44
 # What the whole labelled job spends on live calls: this run's claims plus the one shared
 # extraction pass. Stated here because the saving is the point of the hand-in, and a figure
 # nobody asserts is a figure that quietly goes back to 42.
 EXPECTED_JOB_CALLS = EXPECTED_CALLS + EXPECTED_EXTRACTION_CALLS
-COST_CEILING_USD = 6.00
+# Headroom over the ~$4.00 the widened corpus projects to, for the whole job. Kept well
+# above the projection so ordinary variance does not fail a build, and well below the point
+# where a batching regression could hide inside it.
+COST_CEILING_USD = 8.00
 
 needs_key = pytest.mark.skipif(
     not os.environ.get("ANTHROPIC_API_KEY"), reason="needs ANTHROPIC_API_KEY"
@@ -49,8 +65,8 @@ needs_key = pytest.mark.skipif(
 needs_full_eval = pytest.mark.skipif(
     os.environ.get(FULL_EVAL_ENV, "").strip().lower() not in {"1", "true", "yes"},
     reason=(
-        f"the live findings run costs 14 calls and runs only on a push to main or a pull "
-        f"request labelled `full-eval` (set {FULL_EVAL_ENV})"
+        f"the live findings run costs 44 calls and runs only on a pull request labelled "
+        f"`full-eval` (set {FULL_EVAL_ENV})"
     ),
 )
 
@@ -89,7 +105,7 @@ def test_a_live_findings_run_detects_scores_and_reports_its_abstentions(
     (artifact_dir() / "findings_run.md").write_text(report, encoding="utf-8")
 
     # --- the run reached every stage ------------------------------------------------------
-    assert result.extraction.clauses_read == 301
+    assert result.extraction.clauses_read == EXPECTED_CLAUSES
     assert result.detection.clauses_examined == len(result.extraction.requirements)
     assert result.queue_path is not None and result.queue_path.exists()
 

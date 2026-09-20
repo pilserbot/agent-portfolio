@@ -8,11 +8,17 @@ excluded from `make test-fast`.
 - The **smoke test** runs on every pull request. One page, one structured call, a few cents:
   it proves the wire is connected — that the key resolves, that the router reaches the
   provider, and that a real response validates into the schema `req_core` asked for.
-- The **full pass** reads all 301 clauses of Documents 4, 5 and 6 and measures: the anchor
-  assertion on output nobody scripted, the gate against the Compliance Matrix, and what a
-  real pass costs. It runs only when the pull request carries the `full-eval` label or on a
-  push to `main`, through the same mechanism `ci.yml` already uses to decide between the
-  full gold set and a 20-item sample.
+- The **full pass** reads all 691 clauses of the detection scope — every document the
+  segmenter finds a clause in — and measures: the anchor assertion on output nobody
+  scripted, the gate against the Compliance Matrix, and what a real pass costs. It runs only
+  when the pull request carries the `full-eval` label, through the same mechanism `ci.yml`
+  already uses to decide between the full gold set and a 20-item sample.
+
+  **The gate is still about three documents.** The pass is wider than the comparison because
+  detection needs the whole package and extraction is per page; `compare` restricts itself
+  to `GATE_DOCUMENT_IDS` and the 301-clause comparison against the matrix is unchanged by
+  the widening. Comparing an annex clause against an index that was never about annexes
+  would report a disagreement that is not one.
 
 Paying a quarter and nine minutes on every unrelated pull request buys neither. A smoke test
 that ran the full corpus would not prove anything the one call does not, and a full pass on
@@ -87,12 +93,13 @@ from req_core.clauses import clauses_on_page
 from req_core.extraction import EXTRACT_PURPOSE, PageReading, build_prompt
 from ri05_tender.extract.config import ITB_2_1_POLICY, KESSLER_POINT_CLAUSE_STYLE
 from ri05_tender.extract.gate import (
+    GATE_DOCUMENT_IDS,
     MATRIX_DOCUMENT_ID,
     compare,
-    extraction_corpus,
     render_markdown,
     verify_scope,
 )
+from ri05_tender.scope import detection_corpus
 from ri05_tender.tender.loader import load_tender
 from spine.contracts import AgentRun, StepTrace
 from spine.kpi import cost_report
@@ -118,18 +125,21 @@ KESSLER_POINT = Path("data/tenders/kessler_point")
 
 SMOKE_PURPOSE = "ri05.extract_smoke"
 
-# What the deterministic layer finds, and what the package's own index claims for these three
-# documents. Pinned so a live run that reads fewer clauses fails here rather than quietly
-# reporting a smaller, better-looking gate.
-EXPECTED_CLAUSES = 301
+# What the deterministic layer finds. Both are pinned, and they are different numbers about
+# different questions: the pass reads the whole detection scope, and the gate compares only
+# the three documents the Compliance Matrix covers. A live run that reads fewer clauses
+# fails here rather than quietly reporting a smaller, better-looking gate.
+EXPECTED_CLAUSES = 691
+EXPECTED_CLAUSES_IN_GATE_SCOPE = 301
 
-# The estimate the full pass was approved against: ~18k prompt and ~21k completion tokens
-# over 16 calls at Sonnet 5's $2/$10 per million, so roughly $0.25. An order of magnitude
-# above that is not a surprise to absorb — it is a bug in the batching, and it should fail.
-COST_CEILING_USD = Decimal("3.00")
+# Headroom over the projection, not a target. Widening the corpus to ten documents takes the
+# pass from 301 clauses to 691, so the measured $1.72 projects to about $4.00 — 2.3x the
+# text at 3.1x the calls. The ceiling is $8: far enough above the projection that an ordinary
+# variance does not fail the build, close enough that a batching bug still does.
+COST_CEILING_USD = Decimal("8.00")
 
-# CI sets this from the same expression that chooses the full gold set over a 20-item
-# sample: a push to main, or a pull request labelled `full-eval`. Absent means smoke only.
+# CI sets this from the expression that chooses the full gold set over a 20-item sample: a
+# pull request labelled `full-eval`, and nothing else. Absent means smoke only.
 FULL_EVAL_ENV = "RI05_FULL_EVAL"
 
 needs_key = pytest.mark.skipif(
@@ -138,8 +148,8 @@ needs_key = pytest.mark.skipif(
 needs_full_eval = pytest.mark.skipif(
     os.environ.get(FULL_EVAL_ENV, "").strip().lower() not in {"1", "true", "yes"},
     reason=(
-        f"the full 301-clause pass runs only on a push to main or a pull request labelled "
-        f"`full-eval` (set {FULL_EVAL_ENV}); the smoke test covers every other run"
+        f"the full 691-clause pass runs only on a pull request labelled `full-eval` "
+        f"(set {FULL_EVAL_ENV}); the smoke test covers every other run"
     ),
 )
 
@@ -163,7 +173,7 @@ def test_one_live_structured_call_returns_a_valid_typed_result(tmp_path: Path) -
     this costs cents and takes seconds. It proves nothing about extraction quality and is not
     meant to — that is what the full pass measures.
     """
-    corpus = extraction_corpus(load_tender(KESSLER_POINT))
+    corpus = detection_corpus(load_tender(KESSLER_POINT))
     page, clauses = _cheapest_page(corpus)
     router = a_router(tmp_path)
 
@@ -264,6 +274,10 @@ def test_a_real_extraction_pass_anchors_every_requirement_and_clears_the_gate(
     # --- what the deterministic layer must still be doing ---------------------------------
     assert result.clauses_read == EXPECTED_CLAUSES
     assert len(result.clause_ids) == EXPECTED_CLAUSES
+    # The gate's own view of the same pass: the three documents the matrix covers, and the
+    # number the comparison below is made over. Unchanged by the widening, and asserted
+    # separately so a regression in either scope cannot hide behind the other.
+    assert len(result.clause_ids_in(GATE_DOCUMENT_IDS)) == EXPECTED_CLAUSES_IN_GATE_SCOPE
     assert result.policy_name == ITB_2_1_POLICY.name
     # Every child names a parent that is really in the set, and no id was invented.
     by_id = {requirement.requirement_id: requirement for requirement in result.requirements}
@@ -275,6 +289,8 @@ def test_a_real_extraction_pass_anchors_every_requirement_and_clears_the_gate(
 
     # --- 2. the gate ---------------------------------------------------------------------
     comparison = compare(result, package)
+    assert comparison.scope == list(GATE_DOCUMENT_IDS)
+    assert comparison.extracted_count == EXPECTED_CLAUSES_IN_GATE_SCOPE
 
     # --- 3. the cost, cross-checked against the snapshot already taken --------------------
     # `status` here is a RunStatus ("completed"), not a StepStatus ("ok"). The two enums are
@@ -311,8 +327,8 @@ def test_a_real_extraction_pass_anchors_every_requirement_and_clears_the_gate(
     assert "extraction gate" in report
     assert costs.basis.total_usd < COST_CEILING_USD, (
         f"the pass cost ${costs.basis.total_usd} against a ceiling of ${COST_CEILING_USD}. "
-        f"The estimate was ~$0.25 over 16 calls; an order of magnitude above that is a "
-        f"batching bug, not a surprise to absorb."
+        f"The projection for the widened corpus was ~$4.00 over {EXPECTED_EXTRACTION_CALLS} "
+        f"calls; double that is a batching bug, not a surprise to absorb."
     )
 
 

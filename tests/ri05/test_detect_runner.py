@@ -26,6 +26,7 @@ from ri05_tender.eval.findings_run import (
     run,
 )
 from ri05_tender.eval.matcher import CLASS_TO_FINDING_TYPE
+from ri05_tender.scope import GATE_DOCUMENT_IDS
 
 KESSLER_POINT = Path("data/tenders/kessler_point")
 
@@ -127,12 +128,18 @@ def test_a_split_child_is_scored_against_its_parent_clause() -> None:
     assert as_eval_finding(child).refs == ["X-1.1"]
 
 
+# Every clause the detection corpus holds: ten documents, 691 clauses. Pinned here as well
+# as in the live test, because this is where a corpus that silently narrowed would be caught
+# for free — a smaller number here is a run measuring fewer defects and calling it recall.
+EXPECTED_CLAUSES = 691
+
+
 # --- what the run produced ----------------------------------------------------------------------
 
 
 def test_the_run_reaches_every_stage(result) -> None:  # noqa: ANN001
     assert result.tender_name == "kessler_point"
-    assert result.extraction.clauses_read == 301
+    assert result.extraction.clauses_read == EXPECTED_CLAUSES
     assert result.detection.clauses_examined == len(result.extraction.requirements)
     assert result.card.scored_items > 0
 
@@ -208,9 +215,11 @@ def test_the_report_names_the_queue_when_one_was_written(tmp_path: Path) -> None
 # --- a handed-in extraction -----------------------------------------------------------------
 #
 # The live suite used to extract this corpus twice in one job — once for the gate and once
-# inside the findings run — for 42 model calls where 28 do. `run` now takes an
-# `ExtractionResult`, and these tests pin both halves of that: the pass really is skipped,
-# and a result from the wrong corpus is refused rather than silently scored.
+# inside the findings run. `run` now takes an `ExtractionResult`, and these tests pin both
+# halves of that: the pass really is skipped, and a result that does not cover this run's
+# corpus is refused rather than silently scored. The second half matters more since the
+# corpus widened — both scopes over this package carry the package's name, so the name
+# check alone would wave a three-document extraction into a ten-document run.
 
 
 class CountingCompletion:
@@ -265,7 +274,46 @@ def test_an_extraction_of_a_different_corpus_is_refused() -> None:
         run(KESSLER_POINT, scripted, extraction=foreign)
 
 
+def test_an_extraction_of_too_few_documents_is_refused() -> None:
+    """The narrower trap, and the one that was actually reachable.
+
+    A pass over the gate's three documents carries this package's name, so the name check
+    above lets it through. What it does not carry is the other seven documents, and
+    detecting over it would report every clause in them as carrying no defect — a recall
+    figure over a corpus nobody read, which is worse than an error.
+    """
+    done = run(KESSLER_POINT, scripted)
+    narrow = done.extraction.model_copy(
+        update={"documents_seen": frozenset(GATE_DOCUMENT_IDS)},
+    )
+
+    with pytest.raises(ValueError, match="never read"):
+        run(KESSLER_POINT, scripted, extraction=narrow)
+
+
 # --- the three things the first scored run could not answer ---------------------------------
+
+
+def test_the_report_prints_the_chain_before_any_figure_it_bounds(result) -> None:  # noqa: ANN001
+    """Five conditions stand between a planted defect and a finding that could match it.
+
+    Printed above the recall table, not below it: read the other way round, a recall of
+    zero over 186 reads as a verdict on the detectors when most of the gap is the corpus,
+    the answer key's own references and outputs nothing emits yet.
+    """
+    rendered = render_markdown(result)
+
+    assert "What this configuration could match at all" in rendered
+    assert rendered.index("What this configuration could match at all") < rendered.index(
+        "Recall (overall)"
+    )
+    chain = result.card.ceiling
+    assert chain is not None
+    for link in chain.links:
+        assert link.name in rendered
+    # The last link needs a run to exist, and a live run is where it gets its value. Here it
+    # is enough that the marker distinguishing it is on the page.
+    assert "measured after the run" in rendered
 
 
 def test_the_report_states_the_ceiling_beside_the_recall(result) -> None:  # noqa: ANN001

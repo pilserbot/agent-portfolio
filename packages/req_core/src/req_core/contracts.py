@@ -21,6 +21,8 @@ whether a requirement is met, important, expensive or risky. Those are the appli
 judgements, computed in Python over these records.
 """
 
+from collections.abc import Collection
+
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from req_core.policy import Modality
@@ -156,6 +158,22 @@ class ExtractionResult(BaseModel):
             requirement.requirement_id
             for requirement in self.requirements
             if requirement.parent_id is None
+        )
+
+    def clause_ids_in(self, document_ids: Collection[str]) -> frozenset[str]:
+        """Every clause identifier extracted from one subset of the documents read.
+
+        A pass over a wide corpus answers questions about narrower ones too, and this is how
+        it does so honestly: the clauses are selected by the document each was read from
+        rather than by trusting that the corpus behind the result was the corpus the caller
+        had in mind. Extraction is per page, so the set returned here is exactly what a pass
+        over only those documents would have produced.
+        """
+        wanted = set(document_ids)
+        return frozenset(
+            requirement.requirement_id
+            for requirement in self.requirements
+            if requirement.parent_id is None and requirement.source.source_id in wanted
         )
 
     @property

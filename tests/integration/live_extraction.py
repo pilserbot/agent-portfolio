@@ -1,11 +1,16 @@
 """The one live extraction pass a labelled run makes, and the record of what it produced.
 
-Extraction is deterministic given the corpus and the policy: the same three documents, the
-same segmenter, the same modality convention. Running it twice in one job produced the same
-requirements twice and cost 14 calls, about $0.89 and roughly ten minutes the second time —
-which is most of what pushed the eval job into its wall-clock limit. So it runs once, through the
-session-scoped fixture in `conftest`, and both the extraction gate and the findings run
-read that one result.
+Extraction is deterministic given the corpus and the policy: the same documents, the same
+segmenter, the same modality convention. Running it twice in one job produced the same
+requirements twice — which is most of what pushed the eval job into its wall-clock limit. So
+it runs once, through the session-scoped fixture in `conftest`, and both the extraction gate
+and the findings run read that one result.
+
+**It runs over the detection scope, which is wider than the gate's.** Extraction is per
+page, so a pass over ten documents contains, clause for clause, exactly what a pass over the
+gate's three would have produced — `ExtractionResult.clause_ids_in` is how the gate takes
+its own view, and `gate.compare` names that scope rather than inheriting it. Extracting
+twice, once per scope, would cost 14 calls to re-derive an answer already in hand.
 
 `calls` travels on the record rather than the `Router` that made them. The router is a live
 object with a spend cap and a ledger path; handing it between tests would let one test's
@@ -26,7 +31,7 @@ from req_core.contracts import ExtractionResult
 from req_core.corpus import SourceCorpus
 from req_core.extraction import StructuredCompletion, extract_requirements
 from ri05_tender.extract.config import ITB_2_1_POLICY, KESSLER_POINT_CLAUSE_STYLE
-from ri05_tender.extract.gate import extraction_corpus
+from ri05_tender.scope import detection_corpus
 from ri05_tender.tender.loader import load_tender
 from ri05_tender.tender.models import TenderPackage
 from spine.contracts import ModelCall
@@ -34,9 +39,10 @@ from spine.router import Router, RouterConfig
 
 KESSLER_POINT = Path("data/tenders/kessler_point")
 
-# Extraction is one call per page that carries a clause. Asserted by the tests that use
+# Extraction is one call per page that carries a clause: 44 across the ten documents the
+# detection scope reads, against 14 over the gate's three. Asserted by the tests that use
 # this, so a batching regression fails on a number rather than on a bill.
-EXPECTED_EXTRACTION_CALLS = 14
+EXPECTED_EXTRACTION_CALLS = 44
 
 
 class LiveExtraction(BaseModel):
@@ -79,7 +85,7 @@ def extract_once(ledger_path: Path) -> LiveExtraction:
     and does not intend to have again.
     """
     package = load_tender(KESSLER_POINT)
-    corpus = extraction_corpus(package)
+    corpus = detection_corpus(package)
     router = Router(RouterConfig.from_env().model_copy(update={"ledger_path": ledger_path}))
 
     started = datetime.now(UTC)

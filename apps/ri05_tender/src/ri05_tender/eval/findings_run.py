@@ -20,12 +20,20 @@ defect was found. That is the honest result and the report says so: the recall f
 is recall of *detection*, and the outputs are the next step's work. Reading it as end-to-end
 recall would flatter the second half of a job that has not been done.
 
-**Cost.** 28 calls over the three specification documents: 14 to extract and 14 to read
-claims, one of each per page that carries a clause. The two passes ask different questions
-of the same text, so neither can be skipped — but the *extraction* half can be handed in.
-A caller that already holds an `ExtractionResult` for this corpus passes it as `extraction`
-and this run makes 14 calls, not 28. That is how the live suite stays at 28 calls in total
-rather than 42: the extraction test's pass is the one both tests use.
+**Scope.** This run reads `scope.DETECTION_DOCUMENT_IDS` — every document the segmenter
+finds a clause in, ten of the thirteen. It used to call `extraction_corpus` with no
+argument and inherit the gate's three, which was a set chosen to make a comparison against
+the Compliance Matrix meaningful and never chosen for detection at all. Every recall figure
+that run produced was bounded by a decision nobody had made for it, and nothing said so.
+
+**Cost.** 88 calls: 44 to extract and 44 to read claims, one of each per clause-bearing
+page. The two passes ask different questions of the same text, so neither can be skipped —
+but the *extraction* half can be handed in. A caller that already holds an
+`ExtractionResult` covering this corpus passes it as `extraction` and this run makes 44
+calls, not 88. That hand-in is checked against the corpus's documents rather than its name:
+both scopes over this package carry the package's name, so a name check passes a
+three-document extraction into a ten-document run, and every clause in the seven documents
+it never read would be reported as carrying no defect.
 
 **Why this lives in `eval` and not beside the detectors.** It scores against the answer key,
 and the gold-leakage guard forbids any module outside `eval` from so much as importing the
@@ -44,6 +52,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from req_core.clauses import segment
 from req_core.contracts import ExtractionResult
 from req_core.detectors import OrdinalScales
 from req_core.engine import ReviewRouting, detect, route_for_review
@@ -54,12 +63,12 @@ from ri05_tender.detect.config import CONFIDENCE_THRESHOLD, ORDINAL_SCALES, SEVE
 from ri05_tender.eval.adjudication import queue_from_findings, write_queue
 from ri05_tender.eval.loader import load_gold
 from ri05_tender.eval.matcher import MatchReport, match_findings, source_text
-from ri05_tender.eval.metrics import ScoreCard, score
+from ri05_tender.eval.metrics import ScoreCard, ceiling_chain, score
 from ri05_tender.eval.models import Finding as EvalFinding
 from ri05_tender.eval.models import FindingOutputs
 from ri05_tender.eval.report import render_markdown as render_score_card
 from ri05_tender.extract.config import ITB_2_1_POLICY, KESSLER_POINT_CLAUSE_STYLE
-from ri05_tender.extract.gate import extraction_corpus
+from ri05_tender.scope import detection_corpus, document_numbers
 from ri05_tender.tender.loader import load_tender
 from ri05_tender.tender.models import TenderPackage
 
@@ -180,7 +189,7 @@ def run(
     over requirements extracted from a different package would be worse than paying twice.
     """
     package: TenderPackage = load_tender(folder)
-    corpus = extraction_corpus(package)
+    corpus = detection_corpus(package)
 
     if extraction is None:
         extraction = extract_requirements(
@@ -194,6 +203,18 @@ def run(
             f"the supplied extraction is of {extraction.corpus_name!r} and this run is over "
             f"{corpus.name!r}. Detecting over one package's requirements while scoring "
             f"against another's gold set would produce a number about nothing."
+        )
+    elif not corpus.document_ids <= extraction.documents_seen:
+        # The name check above is not enough and was not, once: both scopes over this
+        # package are called by the package's name, so a three-document extraction passed
+        # in here sailed through and detection ran over a tenth of the requirements it was
+        # about to be scored on. What has to agree is the documents, so that is what is
+        # compared.
+        missing = ", ".join(sorted(corpus.document_ids - extraction.documents_seen))
+        raise ValueError(
+            f"the supplied extraction never read {missing}, which this run's corpus holds. "
+            f"Detecting over requirements from a narrower pass would report every clause in "
+            f"the documents it skipped as carrying no defect."
         )
     detection = detect(
         extraction.requirements,
@@ -221,6 +242,25 @@ def run(
     # withheld scores identically to one that never saw it, and only this separates them.
     if_asserted = match_findings(findings + withheld, gold.scored, source=source)
 
+    # The chain from every planted defect to what this configuration could match, built
+    # here because only this function knows both halves: which documents the corpus holds
+    # and which clause identifiers the segmenter produced from them. `metrics` is given the
+    # finished chain rather than the raw collections — it must not have to guess at a
+    # corpus, since a ceiling guessed wrong is wrong in the flattering direction.
+    chain = ceiling_chain(
+        gold.scored,
+        corpus_documents=document_numbers(corpus.document_ids),
+        clause_identifiers=[
+            clause.identifier for clause in segment(corpus, style=KESSLER_POINT_CLAUSE_STYLE)
+        ],
+        emitted_finding_types=frozenset(DETECTOR_TO_FINDING_TYPE.values()),
+        emitted_outputs=EMITTED_OUTPUTS,
+        # Items a withheld finding would have matched and an asserted one did not: found,
+        # and not said. Taken from the two reports rather than from the confidences, so it
+        # is what the matcher actually did and not what a threshold implies it did.
+        withheld_gold_ids=if_asserted.matched_gold_ids - report.matched_gold_ids,
+    )
+
     card = score(
         tender_name=package.name,
         gold=gold.scored,
@@ -234,6 +274,7 @@ def run(
         emitted_outputs=EMITTED_OUTPUTS,
         if_asserted=if_asserted,
         abstained_findings=len(withheld),
+        ceiling=chain,
     )
 
     written: Path | None = None

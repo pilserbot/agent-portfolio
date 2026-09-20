@@ -24,15 +24,16 @@ from req_core.extraction import ClauseReading, PageReading, extract_requirements
 from req_core.policy import DEFAULT_POLICY, Modality
 from ri05_tender.extract.config import ITB_2_1_POLICY, KESSLER_POINT_CLAUSE_STYLE
 from ri05_tender.extract.gate import (
-    EXTRACTION_DOCUMENT_IDS,
+    GATE_DOCUMENT_IDS,
     MATRIX_DOCUMENT_ID,
     GateError,
     compare,
-    extraction_corpus,
+    gate_corpus,
     matrix_clause_ids,
     render_markdown,
     verify_scope,
 )
+from ri05_tender.scope import ScopeError
 from ri05_tender.tender.loader import load_tender
 from ri05_tender.tender.models import TenderPackage
 
@@ -68,7 +69,7 @@ def package() -> TenderPackage:
 def extracted(package: TenderPackage) -> ExtractionResult:
     """One inert extraction pass over Documents 4, 5 and 6."""
     return extract_requirements(
-        extraction_corpus(package),
+        gate_corpus(package),
         no_op_completion,
         policy=ITB_2_1_POLICY,
         style=KESSLER_POINT_CLAUSE_STYLE,
@@ -78,25 +79,27 @@ def extracted(package: TenderPackage) -> ExtractionResult:
 # --- the matrix cannot be reached -----------------------------------------------------------
 
 
-def test_the_extraction_corpus_holds_only_the_specifications(package: TenderPackage) -> None:
-    corpus = extraction_corpus(package)
+def test_the_gate_corpus_holds_only_the_specifications(package: TenderPackage) -> None:
+    corpus = gate_corpus(package)
 
-    assert corpus.document_ids == set(EXTRACTION_DOCUMENT_IDS)
+    assert corpus.document_ids == set(GATE_DOCUMENT_IDS)
     assert MATRIX_DOCUMENT_ID not in corpus.document_ids
     assert corpus.withheld == {MATRIX_DOCUMENT_ID}
 
 
 def test_including_the_matrix_in_the_corpus_is_refused_by_the_type(package: TenderPackage) -> None:
     # The first of the two enforcements, and the load-bearing one: the mistake is not
-    # representable, so it cannot be made by forgetting.
-    with pytest.raises(GateError) as caught:
-        extraction_corpus(package, include=[*EXTRACTION_DOCUMENT_IDS, MATRIX_DOCUMENT_ID])
+    # representable, so it cannot be made by forgetting. `ScopeError` and not `GateError`
+    # because building a corpus is `scope`'s job now — the gate is one of two callers, and
+    # the refusal belongs to whichever scope was asked for.
+    with pytest.raises(ScopeError) as caught:
+        gate_corpus(package, include=[*GATE_DOCUMENT_IDS, MATRIX_DOCUMENT_ID])
 
     assert MATRIX_DOCUMENT_ID in str(caught.value)
 
 
 def test_the_corpus_refusal_is_the_packages_own_not_this_modules(package: TenderPackage) -> None:
-    # `GateError` wraps it for a caller's convenience; the rule lives in req_core, where any
+    # `ScopeError` wraps it for a caller's convenience; the rule lives in req_core, where any
     # other project gets it too.
     with pytest.raises(CorpusError):
         from req_core.corpus import corpus_from
@@ -104,7 +107,7 @@ def test_the_corpus_refusal_is_the_packages_own_not_this_modules(package: Tender
         corpus_from(
             package.documents,
             name="x",
-            include=[*EXTRACTION_DOCUMENT_IDS, MATRIX_DOCUMENT_ID],
+            include=[*GATE_DOCUMENT_IDS, MATRIX_DOCUMENT_ID],
             withhold=[MATRIX_DOCUMENT_ID],
         )
 
@@ -113,10 +116,10 @@ def test_nothing_extracted_cites_a_document_outside_the_corpus(
     package: TenderPackage, extracted: ExtractionResult
 ) -> None:
     # The second enforcement, on the way out: every anchor names a document the corpus held.
-    verify_scope(extracted, extraction_corpus(package))
+    verify_scope(extracted, gate_corpus(package))
 
     cited = {requirement.source.source_id for requirement in extracted.requirements}
-    assert cited == set(EXTRACTION_DOCUMENT_IDS)
+    assert cited == set(GATE_DOCUMENT_IDS)
     assert extracted.withheld == {MATRIX_DOCUMENT_ID}
 
 
@@ -125,7 +128,7 @@ def test_verify_scope_catches_an_anchor_into_a_document_the_corpus_never_held(
 ) -> None:
     # The way out, checked separately from the way in: a record can claim to have seen only
     # the right documents and still carry an anchor that does not.
-    corpus = extraction_corpus(package)
+    corpus = gate_corpus(package)
     forged = extracted.requirements[0].model_copy(
         update={
             "source": extracted.requirements[0].source.model_copy(
@@ -146,10 +149,10 @@ def test_verify_scope_catches_an_anchor_into_a_document_the_corpus_never_held(
 
 
 def test_verify_scope_catches_a_result_that_strayed(package: TenderPackage) -> None:
-    corpus = extraction_corpus(package)
+    corpus = gate_corpus(package)
     strayed = ExtractionResult(
         corpus_name="kessler_point",
-        documents_seen=frozenset({*EXTRACTION_DOCUMENT_IDS, MATRIX_DOCUMENT_ID}),
+        documents_seen=frozenset({*GATE_DOCUMENT_IDS, MATRIX_DOCUMENT_ID}),
         policy_name="x",
         clauses_read=0,
     )
@@ -174,7 +177,7 @@ def test_the_default_clause_style_would_have_been_wrong_here(package: TenderPack
     # It also matches bare dotted numbers, which in these documents are section headings
     # ("5.1 General") — and several collide across documents. This is why the style is
     # configuration rather than a constant in req_core.
-    loose = extract_requirements(extraction_corpus(package), no_op_completion)
+    loose = extract_requirements(gate_corpus(package), no_op_completion)
 
     assert loose.clauses_read > EXPECTED_CLAUSES
     assert len(loose.clause_ids) < loose.clauses_read  # ids collided across documents
@@ -248,7 +251,7 @@ def test_every_requirement_extracted_from_the_real_tender_resolves_to_its_page(
     package: TenderPackage, extracted: ExtractionResult
 ) -> None:
     """The assertion the package rests on, on 301 real clauses across 16 real PDF pages."""
-    report = verify(extracted.requirements, extraction_corpus(package))
+    report = verify(extracted.requirements, gate_corpus(package))
 
     assert report.ok, report.describe()
     assert report.checked == report.resolved == EXPECTED_CLAUSES
@@ -312,7 +315,7 @@ def test_split_children_are_not_compared_against_the_matrix(package: TenderPacka
         )
 
     split = extract_requirements(
-        extraction_corpus(package),
+        gate_corpus(package),
         splitting,
         policy=ITB_2_1_POLICY,
         style=KESSLER_POINT_CLAUSE_STYLE,
@@ -344,7 +347,11 @@ def test_the_report_says_none_rather_than_printing_an_empty_list() -> None:
 
     rendered = render_markdown(
         MatrixComparison(
-            tender_name="x", extracted_count=0, matrix_row_count=0, matrix_distinct_count=0
+            tender_name="x",
+            scope=list(GATE_DOCUMENT_IDS),
+            extracted_count=0,
+            matrix_row_count=0,
+            matrix_distinct_count=0,
         ),
         empty,
     )

@@ -2,7 +2,11 @@
 
 The order is deliberate. The header states how many items were scored **and how many were
 excluded**, because a denominator that shrank without anyone saying so is the easiest way
-for a score to improve while the system does not. Then the headline figures — with UNSTATED
+for a score to improve while the system does not. Then the ceiling chain, before any
+figure it bounds: five conditions stand between a planted defect and a finding that could
+match it, and a recall number printed without them reads as a verdict on the detectors when
+most of the gap belongs to the corpus, the answer key's own references and unbuilt outputs.
+Then the headline figures — with UNSTATED
 and DISPLACED recovery on separate rows, each carrying its own denominator, because they
 were one row until rev 3 and that row was measuring two different things — then recall
 broken out three ways, then the no-bid gate on a line of its own, then the outcomes that
@@ -111,6 +115,7 @@ def render_markdown(result: ScoreCard) -> str:
         f"**{result.scored_items} scored gold item(s)**, {excluded}. "
         f"{result.findings} finding(s) reported.",
         "",
+        *_ceiling_section(result),
         *_table(
             header,
             [
@@ -283,6 +288,49 @@ def _gate_note(result: ScoreCard) -> str:
         "_The gate is not a rate: a bid going out on a tender the system should have "
         "refused is not offset by anything else on this page._"
     )
+
+
+def _ceiling_section(result: ScoreCard) -> list[str]:
+    """The chain from every planted defect to what this configuration could match.
+
+    First on the page, before any recall figure, because it is the denominator every figure
+    below is read against. Each row says what its condition removed and why — a scope
+    decision, an answer-key problem, unbuilt capability and a threshold are four different
+    causes, and a single gap between 186 and 0 hides all four.
+    """
+    chain = result.ceiling
+    if chain is None:
+        return []
+
+    rows: list[tuple[str, ...]] = []
+    for index, link in enumerate(chain.links):
+        marker = " †" if link.measured_after_the_run else ""
+        rows.append(
+            (
+                link.name + marker,
+                str(link.count),
+                "—" if index == 0 else f"−{link.removed}",
+                link.note,
+            )
+        )
+
+    lines = [
+        "### What this configuration could match at all",
+        "",
+        *_table(("Condition", "Items", "Removed", "Why"), rows, "lrrl"),
+        "",
+        f"**{chain.ceiling} of {chain.scored_total}**. Every recall figure below carries its "
+        f"own denominator; this is where they come from. The overall figure keeps all "
+        f"{chain.scored_total} in its denominator on purpose — the product is measured "
+        f"against every planted defect, not against the ones this step happens to be able "
+        f"to reach — and the chain says which part of the gap belongs to this step.",
+        "",
+        "_† measured after the run rather than from the configuration: whether a threshold "
+        "withheld an item cannot be known until findings exist. Every row above it can be "
+        "computed before a single call is made._",
+        "",
+    ]
+    return lines
 
 
 def _addressable_section(result: ScoreCard) -> list[str]:
